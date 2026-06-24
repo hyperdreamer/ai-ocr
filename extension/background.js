@@ -37,9 +37,6 @@ chrome.storage.local.get('lastRegion', (items) => {
 chrome.storage.local.get('lastResult', (items) => {
   if (items.lastResult) {
     savedLastResult = items.lastResult;
-    states.forEach((state) => {
-      if (!state.mergedText) state.mergedText = savedLastResult;
-    });
   }
 });
 
