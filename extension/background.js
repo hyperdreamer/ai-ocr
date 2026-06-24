@@ -37,9 +37,25 @@ chrome.commands.onCommand.addListener(async (command) => {
       return;
     }
     await ensureContentScript(tab.id);
-    resetState();
-    updateState({ active: true, status: 'Selecting', progress: 'Drag a rectangle.' });
-    await chrome.tabs.sendMessage(tab.id, { type: 'selection:start' });
+
+    // Reuse saved region if available, otherwise show selection overlay
+    if (state.lastRegion) {
+      const vp = await chrome.tabs.sendMessage(tab.id, { type: 'get-viewport' });
+      const fullRegion = {
+        ...state.lastRegion,
+        viewportWidth: vp?.width || 1920,
+        viewportHeight: vp?.height || 1080,
+        devicePixelRatio: vp?.dpr || 1
+      };
+      runCaptureLoop(tab, fullRegion).catch((e) => {
+        console.error('Shortcut reuse capture failed:', e);
+        updateState({ active: false, status: 'Error', error: e.message, progress: 'Failed.' });
+      });
+    } else {
+      resetState();
+      updateState({ active: true, status: 'Selecting', progress: 'Drag a rectangle.' });
+      await chrome.tabs.sendMessage(tab.id, { type: 'selection:start' });
+    }
   } catch (e) {
     console.error('Command handler failed:', e);
     updateState({ active: false, status: 'Error', error: e.message, progress: 'Failed.' });
