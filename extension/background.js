@@ -444,12 +444,13 @@ async function autoTranslateIfEnabled(tabId, originalText) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: originalText, language: ocrLanguage, prompt: stored[key] || undefined })
     });
-    if (!response.ok) return;
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     const translated = payload.text || '';
     chrome.runtime.sendMessage({ type: 'translation:update', tabId, text: translated }).catch(() => {});
   } catch (e) {
     console.error('Auto-translate failed:', e);
+    chrome.runtime.sendMessage({ type: 'translation:update', tabId, text: '' }).catch(() => {});
   }
 }
 

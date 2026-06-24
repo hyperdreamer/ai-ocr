@@ -83,13 +83,15 @@ chrome.runtime.onMessage.addListener((message) => {
   }
   if (message?.type === 'translation:update') {
     if (message.tabId !== currentTabId) return;
-    tl2Result.value = message.text || '';
-    chrome.storage.local.set({ [`tl2Result:${currentTabId}`]: message.text || '' });
+    if (message.text) {
+      tl2Result.value = message.text;
+      chrome.storage.local.set({ [`tl2Result:${currentTabId}`]: message.text });
+    }
     tl2Copy.disabled = tl2Download.disabled = !message.text;
     tl2Translate.textContent = 'Translate';
     tl2Translate.classList.remove('danger');
     tl2AbortController = null;
-    setTl2Progress('Translation complete.');
+    setTl2Progress(message.text ? 'Translation complete.' : 'Translation failed.');
     updateTranslationButtons();
   }
   if (message?.type === 'translation:start') {
