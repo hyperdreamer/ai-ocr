@@ -12,7 +12,6 @@ const copyButton = document.getElementById('copy');
 const downloadButton = document.getElementById('download');
 const hostInput = document.getElementById('ocr-host');
 const portInput = document.getElementById('ocr-port');
-const languageSelect = document.getElementById('ocr-language');
 const autoscrollCheckbox = document.getElementById('ocr-autoscroll');
 const autocopyCheckbox = document.getElementById('ocr-autocopy');
 const lastRegionEl = document.getElementById('last-region');
@@ -58,7 +57,6 @@ copyButton.addEventListener('click', copyOcrText);
 downloadButton.addEventListener('click', downloadOcrText);
 hostInput.addEventListener('change', saveSettings);
 portInput.addEventListener('change', saveSettings);
-languageSelect.addEventListener('change', saveSettings);
 autoscrollCheckbox.addEventListener('change', saveSettings);
 autocopyCheckbox.addEventListener('change', saveSettings);
 
@@ -84,12 +82,11 @@ async function init() {
   currentTabId = tab?.id || null;
 
   const items = await chrome.storage.sync.get({
-    ocrHost: 'localhost', ocrPort: 8000, ocrLanguage: 'original',
+    ocrHost: 'localhost', ocrPort: 8000,
     ocrAutoscroll: true, ocrAutoCopy: true
   });
   hostInput.value = items.ocrHost;
   portInput.value = items.ocrPort;
-  languageSelect.value = items.ocrLanguage;
   autoscrollCheckbox.checked = items.ocrAutoscroll;
   autocopyCheckbox.checked = items.ocrAutoCopy;
 
@@ -143,7 +140,6 @@ async function saveSettings() {
   await chrome.storage.sync.set({
     ocrHost: hostInput.value.trim() || 'localhost',
     ocrPort: parseInt(portInput.value, 10) || 8000,
-    ocrLanguage: languageSelect.value || 'original',
     ocrAutoscroll: autoscrollCheckbox.checked,
     ocrAutoCopy: autocopyCheckbox.checked
   });
