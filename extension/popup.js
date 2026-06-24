@@ -5,6 +5,7 @@ const shortProgressEl = document.getElementById('short-progress');
 const progressEl = document.getElementById('progress');
 const resultEl = document.getElementById('result');
 const startButton = document.getElementById('start');
+const copyButton = document.getElementById('copy');
 const downloadButton = document.getElementById('download');
 const hostInput = document.getElementById('ocr-host');
 const portInput = document.getElementById('ocr-port');
@@ -13,6 +14,7 @@ let latestState = null;
 
 document.addEventListener('DOMContentLoaded', init);
 startButton.addEventListener('click', startCapture);
+copyButton.addEventListener('click', copyText);
 downloadButton.addEventListener('click', downloadText);
 hostInput.addEventListener('change', saveSettings);
 portInput.addEventListener('change', saveSettings);
@@ -20,9 +22,6 @@ portInput.addEventListener('change', saveSettings);
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'state:update') {
     renderState(message.state);
-  }
-  if (message?.type === 'popup:auto-download') {
-    downloadText();
   }
 });
 
@@ -61,6 +60,7 @@ async function startCapture() {
 function renderState(state) {
   latestState = state || {};
   const mergedText = latestState.mergedText || '';
+  const hasText = mergedText.trim().length > 0;
 
   statusEl.textContent = latestState.status || 'Idle';
   currentPageEl.textContent = String(latestState.currentPage || 0);
@@ -69,14 +69,28 @@ function renderState(state) {
   progressEl.textContent = latestState.error || latestState.progress || 'Ready';
   resultEl.value = mergedText;
   startButton.disabled = Boolean(latestState.active);
-  downloadButton.disabled = mergedText.trim().length === 0;
+  copyButton.disabled = !hasText;
+  downloadButton.disabled = !hasText;
+}
+
+async function copyText() {
+  const text = latestState?.mergedText || resultEl.value || '';
+  if (!text.trim()) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    const prev = copyButton.textContent;
+    copyButton.textContent = 'Copied!';
+    setTimeout(() => { copyButton.textContent = prev; }, 1500);
+  } catch {
+    // Fallback for non-secure contexts
+    resultEl.select();
+    document.execCommand('copy');
+  }
 }
 
 function downloadText() {
   const text = latestState?.mergedText || resultEl.value || '';
-  if (!text.trim()) {
-    return;
-  }
+  if (!text.trim()) return;
 
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);

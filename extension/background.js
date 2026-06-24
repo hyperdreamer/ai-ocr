@@ -162,7 +162,6 @@ async function runCaptureLoop(tab, region) {
     fragments,
     mergedText: finalText
   });
-  chrome.runtime.sendMessage({ type: 'popup:auto-download' }).catch(() => {});
 }
 
 // ── crop ───────────────────────────────────────────────────────
