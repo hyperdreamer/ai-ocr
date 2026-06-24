@@ -142,6 +142,16 @@
         font-size: 11px;
         text-align: center;
       }
+
+      .option-row {
+        margin-bottom: 10px;
+      }
+
+      .option-row label {
+        color: #334155;
+        font-size: 12px;
+        cursor: pointer;
+      }
     </style>
   </head>
   <body>
@@ -181,6 +191,9 @@
             <option value="Spanish">Spanish</option>
           </select>
         </label>
+      </div>
+      <div class="option-row">
+        <label><input id="ocr-autoscroll" type="checkbox" checked> Auto-scroll to end</label>
       </div>
       <textarea id="result" readonly placeholder="Merged OCR text will appear here."></textarea>
       <div class="actions">

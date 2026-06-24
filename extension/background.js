@@ -205,6 +205,12 @@ async function runCaptureLoop(tab, region) {
       updateState({ progress: 'Stopped by user.' });
       break;
     }
+    // Check autoscroll setting
+    const { ocrAutoscroll } = await chrome.storage.sync.get({ ocrAutoscroll: true });
+    if (!ocrAutoscroll && fragments.length > 0) {
+      updateState({ progress: 'Single capture complete (autoscroll off).' });
+      break;
+    }
     const pageNumber = fragments.length + 1;
     updateState({
       currentPage: pageNumber,
@@ -267,6 +273,12 @@ async function resumeCaptureLoop(rs) {
   while (true) {
     if (state.stopRequested) {
       updateState({ progress: 'Stopped by user.' });
+      break;
+    }
+    // Check autoscroll setting
+    const { ocrAutoscroll } = await chrome.storage.sync.get({ ocrAutoscroll: true });
+    if (!ocrAutoscroll && fragments.length > 0) {
+      updateState({ progress: 'Single capture complete (autoscroll off).' });
       break;
     }
     const pageNumber = fragments.length + 1;

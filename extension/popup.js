@@ -13,6 +13,7 @@ const downloadButton = document.getElementById('download');
 const hostInput = document.getElementById('ocr-host');
 const portInput = document.getElementById('ocr-port');
 const languageSelect = document.getElementById('ocr-language');
+const autoscrollCheckbox = document.getElementById('ocr-autoscroll');
 const lastRegionEl = document.getElementById('last-region');
 
 let latestState = null;
@@ -27,6 +28,7 @@ downloadButton.addEventListener('click', downloadText);
 hostInput.addEventListener('change', saveSettings);
 portInput.addEventListener('change', saveSettings);
 languageSelect.addEventListener('change', saveSettings);
+autoscrollCheckbox.addEventListener('change', saveSettings);
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'state:update') {
@@ -38,11 +40,13 @@ async function init() {
   const items = await chrome.storage.sync.get({
     ocrHost: 'localhost',
     ocrPort: 8000,
-    ocrLanguage: 'original'
+    ocrLanguage: 'original',
+    ocrAutoscroll: true
   });
   hostInput.value = items.ocrHost;
   portInput.value = items.ocrPort;
   languageSelect.value = items.ocrLanguage;
+  autoscrollCheckbox.checked = items.ocrAutoscroll;
 
   // Load stored last result in case background state is empty (race condition on startup)
   const stored = await chrome.storage.local.get('lastResult');
@@ -63,7 +67,8 @@ async function saveSettings() {
   await chrome.storage.sync.set({
     ocrHost: hostInput.value.trim() || 'localhost',
     ocrPort: parseInt(portInput.value, 10) || 8000,
-    ocrLanguage: languageSelect.value || 'original'
+    ocrLanguage: languageSelect.value || 'original',
+    ocrAutoscroll: autoscrollCheckbox.checked
   });
 }
 
