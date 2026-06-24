@@ -56,6 +56,7 @@ stopButton.addEventListener('click', stopCapture);
 retryButton.addEventListener('click', retryCapture);
 copyButton.addEventListener('click', copyOcrText);
 downloadButton.addEventListener('click', downloadOcrText);
+resultEl.addEventListener('input', saveOcrText);
 hostInput.addEventListener('change', saveSettings);
 portInput.addEventListener('change', saveSettings);
 autoscrollCheckbox.addEventListener('change', saveSettings);
@@ -147,6 +148,11 @@ async function saveSettings() {
 }
 
 // ── OCR actions ───────────────────────────────────────────────
+async function saveOcrText() {
+  if (!currentTabId) return;
+  await chrome.storage.local.set({ [`lastResult:${currentTabId}`]: resultEl.value });
+}
+
 async function refreshState() {
   const response = await chrome.runtime.sendMessage({ type: 'popup:get-state' });
   if (response?.ok) {
