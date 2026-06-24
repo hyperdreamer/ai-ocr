@@ -179,9 +179,10 @@ async function translateOcrText() {
   try {
     const host = hostInput.value.trim() || 'localhost';
     const port = parseInt(portInput.value, 10) || 8000;
+    const stored = await chrome.storage.local.get('translatePrompt');
     const response = await fetch(`http://${host}:${port}/translate`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, language })
+      body: JSON.stringify({ text, language, prompt: stored.translatePrompt || undefined })
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
