@@ -332,9 +332,21 @@ function downloadOcrText() {
 let tl2AbortController = null;
 
 async function doTranslation() {
-  // If already translating, treat as Stop
+  // If a live AbortController exists, treat click as Stop
   if (tl2AbortController) {
     stopTranslation();
+    return;
+  }
+
+  // Button shows "Stop" but no live controller — stale state from a previous
+  // popup session (tl2AbortController doesn't survive popup close).  Clear
+  // the stale state so the user doesn't need a second click.
+  if (tl2Translate.textContent === 'Stop') {
+    tl2Translate.textContent = 'Translate';
+    tl2Translate.classList.remove('danger');
+    if (currentTabId) chrome.storage.local.remove(`tl2Translating:${currentTabId}`);
+    setTl2Progress('');
+    updateTranslationButtons();
     return;
   }
 
