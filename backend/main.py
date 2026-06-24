@@ -101,7 +101,13 @@ def load_config() -> AppConfig:
     provider = str(ai_section.get("provider", "openai")).lower()
     api_base = str(ai_section.get("api_base", "https://api.openai.com")).rstrip("/")
     model = str(ai_section.get("model", "gpt-4.1-mini"))
-    api_key = _read_api_key(ai_section, provider) if provider in {"openai", "anthropic"} else ""
+
+    # Lazy: resolve API key now if available, otherwise store empty string.
+    # Actual key requirement is enforced at request time in _call_openai / _call_anthropic.
+    try:
+        api_key = _read_api_key(ai_section, provider) if provider in {"openai", "anthropic"} else ""
+    except RuntimeError:
+        api_key = ""
 
     return AppConfig(
         host=str(raw_config.get("host", DEFAULT_HOST)),

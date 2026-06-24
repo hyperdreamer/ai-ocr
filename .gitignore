@@ -22,6 +22,7 @@ pip-wheel-metadata/
 # Virtual environments and local config
 .env
 .env.*
+config.yaml
 venv/
 .venv/
 ENV/
