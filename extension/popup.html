@@ -186,6 +186,7 @@
     <div class="tab-bar">
       <button class="tab active" data-panel="ocr-panel">OCR</button>
       <button class="tab" data-panel="translate-panel">Prompt</button>
+      <button class="tab" data-panel="translation-panel">Translation</button>
     </div>
 
     <!-- OCR Panel -->
@@ -247,6 +248,30 @@
         </label>
       </div>
       <textarea id="translate-prompt" placeholder="Custom AI prompt (per language). E.g.: Translate to formal academic Chinese." style="min-height:200px"></textarea>
+    </main>
+
+    <!-- Translation Panel -->
+    <main id="translation-panel" class="hidden">
+      <h1>Translation</h1>
+      <div class="settings">
+        <label>Language
+          <select id="tl2-language">
+            <option value="Chinese">Chinese</option>
+            <option value="English">English</option>
+            <option value="Japanese">Japanese</option>
+            <option value="Korean">Korean</option>
+            <option value="French">French</option>
+            <option value="German">German</option>
+            <option value="Spanish">Spanish</option>
+          </select>
+        </label>
+      </div>
+      <textarea id="tl2-result" readonly placeholder="Translation will appear here."></textarea>
+      <div class="actions">
+        <button id="tl2-translate" type="button" disabled>Translate</button>
+        <button id="tl2-copy" type="button" disabled>Copy</button>
+        <button id="tl2-download" type="button" disabled>Download</button>
+      </div>
     </main>
 
     <script src="popup.js"></script>

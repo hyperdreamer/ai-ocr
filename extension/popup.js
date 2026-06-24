@@ -22,11 +22,19 @@ const lastRegionEl = document.getElementById('last-region');
 const tlLanguage = document.getElementById('tl-language');
 const translatePrompt = document.getElementById('translate-prompt');
 
+// ── Translation panel elements ────────────────────────────────
+const tl2Language = document.getElementById('tl2-language');
+const tl2Result = document.getElementById('tl2-result');
+const tl2Translate = document.getElementById('tl2-translate');
+const tl2Copy = document.getElementById('tl2-copy');
+const tl2Download = document.getElementById('tl2-download');
+
 // ── Tab state ─────────────────────────────────────────────────
 const tabs = document.querySelectorAll('.tab');
 const panels = {
   'ocr-panel': document.getElementById('ocr-panel'),
-  'translate-panel': document.getElementById('translate-panel')
+  'translate-panel': document.getElementById('translate-panel'),
+  'translation-panel': document.getElementById('translation-panel')
 };
 
 let latestState = null;
@@ -59,6 +67,11 @@ autocopyCheckbox.addEventListener('change', saveSettings);
 // ── Translate panel listeners ─────────────────────────────────
 tlLanguage.addEventListener('change', onTlLanguageChange);
 translatePrompt.addEventListener('input', saveTlState);
+
+// ── Translation panel listeners ───────────────────────────────
+tl2Translate.addEventListener('click', doTranslation);
+tl2Copy.addEventListener('click', () => copyResult(tl2Result, tl2Copy));
+tl2Download.addEventListener('click', () => downloadAsFile(tl2Result.value.trim(), 'translate'));
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'state:update') {
@@ -221,6 +234,8 @@ function renderState(state) {
 
   const sr = latestState.lastRegion;
   if (sr) lastRegionEl.textContent = `Last region: ${sr.width}x${sr.height}px`;
+
+  updateTranslationButtons();
 }
 
 async function copyOcrText() {
@@ -230,9 +245,57 @@ async function copyOcrText() {
 }
 function downloadOcrText() {
   const t = resultEl.value.trim(); if (!t) return;
-  const blob = new Blob([t], { type: 'text/plain;charset=utf-8' });
+  downloadAsFile(t, 'qidian-ocr');
+}
+
+// ── Translation panel actions ─────────────────────────────────
+async function doTranslation() {
+  const text = resultEl.value.trim();
+  if (!text) return;
+  const language = tl2Language.value;
+  tl2Translate.disabled = true;
+  try {
+    const host = hostInput.value.trim() || 'localhost';
+    const port = parseInt(portInput.value, 10) || 8000;
+    const key = `translatePrompt:${language}`;
+    const stored = await chrome.storage.local.get(key);
+    const response = await fetch(`http://${host}:${port}/translate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, language, prompt: stored[key] || undefined })
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    if (payload.error) throw new Error(payload.error);
+    tl2Result.value = payload.text || '';
+    tl2Copy.disabled = tl2Download.disabled = false;
+    updateTranslationButtons();
+  } catch (e) {
+    tl2Result.value = `Error: ${e.message}`;
+    updateTranslationButtons();
+  } finally {
+    tl2Translate.disabled = false;
+  }
+}
+
+function copyResult(textarea, button) {
+  const t = textarea.value.trim(); if (!t) return;
+  try { navigator.clipboard.writeText(t); button.textContent = 'Copied!'; setTimeout(() => button.textContent = 'Copy', 1500); }
+  catch { textarea.select(); document.execCommand('copy'); }
+}
+
+function updateTranslationButtons() {
+  const hasSource = resultEl.value.trim().length > 0;
+  const hasResult = tl2Result.value.trim().length > 0;
+  tl2Translate.disabled = !hasSource;
+  tl2Copy.disabled = !hasResult;
+  tl2Download.disabled = !hasResult;
+}
+
+function downloadAsFile(text, prefix) {
+  if (!text) return;
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  chrome.downloads.download({ url, filename: `qidian-ocr-${ts}.txt`, saveAs: true },
+  chrome.downloads.download({ url, filename: `${prefix}-${ts}.txt`, saveAs: true },
     () => setTimeout(() => URL.revokeObjectURL(url), 30000));
 }
