@@ -8,7 +8,9 @@
     "tabs",
     "scripting",
     "downloads",
-    "storage"
+    "storage",
+    "offscreen",
+    "clipboardWrite"
   ],
   "host_permissions": [
     "http://localhost:*/*",

@@ -395,6 +395,7 @@ async function retryTranslateAndFinalize(finalText, fragments) {
     mergedText: translatedText
   });
   chrome.storage.local.set({ lastResult: translatedText });
+  copyToClipboard(translatedText);
   return translatedText;
 }
 
@@ -565,6 +566,20 @@ function resetState() {
     progress: 'Ready', fragments: [], error: '', stopRequested: false,
     retryState: null, retryStage: null, pendingText: '' });
   broadcastState();
+}
+
+async function copyToClipboard(text) {
+  if (!text) return;
+  try {
+    await chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['CLIPBOARD'],
+      justification: 'Copy OCR result to clipboard'
+    });
+  } catch (e) {
+    // Document may already exist — that's fine
+  }
+  chrome.runtime.sendMessage({ type: 'offscreen:copy', text }).catch(() => {});
 }
 
 function updateState(partial) {
