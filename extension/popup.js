@@ -1,3 +1,4 @@
+// ── OCR panel elements ────────────────────────────────────────
 const statusEl = document.getElementById('status');
 const currentPageEl = document.getElementById('current-page');
 const fragmentsEl = document.getElementById('fragments');
@@ -17,21 +18,52 @@ const autoscrollCheckbox = document.getElementById('ocr-autoscroll');
 const autocopyCheckbox = document.getElementById('ocr-autocopy');
 const lastRegionEl = document.getElementById('last-region');
 
+// ── Translate panel elements ──────────────────────────────────
+const translateInput = document.getElementById('translate-input');
+const tlTranslateButton = document.getElementById('tl-translate');
+const translateResult = document.getElementById('translate-result');
+const tlCopyButton = document.getElementById('tl-copy');
+const tlDownloadButton = document.getElementById('tl-download');
+
+// ── Tab state ─────────────────────────────────────────────────
+const tabs = document.querySelectorAll('.tab');
+const panels = {
+  'ocr-panel': document.getElementById('ocr-panel'),
+  'translate-panel': document.getElementById('translate-panel')
+};
+
 let latestState = null;
 let currentTabId = null;
 
+// ── Tab switching ─────────────────────────────────────────────
+tabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    tabs.forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    Object.values(panels).forEach(p => p.classList.add('hidden'));
+    panels[tab.dataset.panel].classList.remove('hidden');
+  });
+});
+
+// ── OCR panel listeners ───────────────────────────────────────
 document.addEventListener('DOMContentLoaded', init);
 startButton.addEventListener('click', startCapture);
-translateButton.addEventListener('click', translateText);
+translateButton.addEventListener('click', translateOcrText);
 stopButton.addEventListener('click', stopCapture);
 retryButton.addEventListener('click', retryCapture);
-copyButton.addEventListener('click', copyText);
-downloadButton.addEventListener('click', downloadText);
+copyButton.addEventListener('click', copyOcrText);
+downloadButton.addEventListener('click', downloadOcrText);
 hostInput.addEventListener('change', saveSettings);
 portInput.addEventListener('change', saveSettings);
 languageSelect.addEventListener('change', saveSettings);
 autoscrollCheckbox.addEventListener('change', saveSettings);
 autocopyCheckbox.addEventListener('change', saveSettings);
+
+// ── Translate panel listeners ─────────────────────────────────
+tlTranslateButton.addEventListener('click', doTranslate);
+tlCopyButton.addEventListener('click', copyTlResult);
+tlDownloadButton.addEventListener('click', downloadTlResult);
+translateInput.addEventListener('input', saveTranslateInput);
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'state:update') {
@@ -40,6 +72,7 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
+// ── Init ──────────────────────────────────────────────────────
 async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   currentTabId = tab?.id || null;
@@ -57,22 +90,25 @@ async function init() {
   autoscrollCheckbox.checked = items.ocrAutoscroll;
   autocopyCheckbox.checked = items.ocrAutoCopy;
 
-  // Load stored result for this tab only. New tabs stay empty.
+  // Load OCR result for this tab
   const resultKey = currentTabId ? `lastResult:${currentTabId}` : null;
   const stored = resultKey ? await chrome.storage.local.get(resultKey) : {};
   if (resultKey && stored[resultKey]) resultEl.value = stored[resultKey];
 
   await refreshState();
 
-  // Fallback: if background state was empty, restore this tab's stored result again.
   if (!resultEl.value && resultKey) {
     const fb = await chrome.storage.local.get(resultKey);
     if (fb[resultKey]) resultEl.value = fb[resultKey];
   }
 
+  // Load translate input
+  const tl = await chrome.storage.local.get('translateInput');
+  if (tl.translateInput) translateInput.value = tl.translateInput;
+
   chrome.storage.local.get('lastRegion', (r) => {
     if (r.lastRegion) {
-      lastRegionEl.textContent = `Last region: ${r.lastRegion.width}×${r.lastRegion.height}px`;
+      lastRegionEl.textContent = `Last region: ${r.lastRegion.width}x${r.lastRegion.height}px`;
     } else {
       lastRegionEl.textContent = 'No saved region';
     }
@@ -89,6 +125,11 @@ async function saveSettings() {
   });
 }
 
+async function saveTranslateInput() {
+  await chrome.storage.local.set({ translateInput: translateInput.value });
+}
+
+// ── OCR actions ───────────────────────────────────────────────
 async function refreshState() {
   const response = await chrome.runtime.sendMessage({ type: 'popup:get-state' });
   if (response?.ok) {
@@ -107,19 +148,16 @@ async function startCapture() {
   }
 }
 
-async function translateText() {
+async function translateOcrText() {
   const text = resultEl.value.trim();
   if (!text) return;
-
   const language = languageSelect.value;
   if (language === 'original') {
     progressEl.textContent = 'Select a target language first.';
     return;
   }
-
   translateButton.disabled = true;
   progressEl.textContent = `Translating to ${language}...`;
-
   try {
     const host = hostInput.value.trim() || 'localhost';
     const port = parseInt(portInput.value, 10) || 8000;
@@ -128,14 +166,9 @@ async function translateText() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, language })
     });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     if (payload.error) throw new Error(payload.error);
-
     const translated = payload.text || '';
     resultEl.value = translated;
     latestState.mergedText = translated;
@@ -191,11 +224,11 @@ function renderState(state) {
   downloadButton.disabled = !hasText;
 
   if (savedRegion) {
-    lastRegionEl.textContent = `Last region: ${savedRegion.width}×${savedRegion.height}px`;
+    lastRegionEl.textContent = `Last region: ${savedRegion.width}x${savedRegion.height}px`;
   }
 }
 
-async function copyText() {
+async function copyOcrText() {
   const text = resultEl.value.trim();
   if (!text) return;
   try {
@@ -209,15 +242,67 @@ async function copyText() {
   }
 }
 
-function downloadText() {
+function downloadOcrText() {
   const text = resultEl.value.trim();
   if (!text) return;
+  downloadAsFile(text, 'qidian-ocr');
+}
+
+// ── Translate panel actions ───────────────────────────────────
+async function doTranslate() {
+  const text = translateInput.value.trim();
+  if (!text) return;
+  const language = languageSelect.value;
+  if (language === 'original') return;
+  tlTranslateButton.disabled = true;
+  try {
+    const host = hostInput.value.trim() || 'localhost';
+    const port = parseInt(portInput.value, 10) || 8000;
+    const response = await fetch(`http://${host}:${port}/translate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, language })
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    if (payload.error) throw new Error(payload.error);
+    translateResult.value = payload.text || '';
+    tlCopyButton.disabled = false;
+    tlDownloadButton.disabled = false;
+  } catch (e) {
+    translateResult.value = `Error: ${e.message}`;
+  } finally {
+    tlTranslateButton.disabled = false;
+  }
+}
+
+async function copyTlResult() {
+  const text = translateResult.value.trim();
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    const prev = tlCopyButton.textContent;
+    tlCopyButton.textContent = 'Copied!';
+    setTimeout(() => { tlCopyButton.textContent = prev; }, 1500);
+  } catch {
+    translateResult.select();
+    document.execCommand('copy');
+  }
+}
+
+function downloadTlResult() {
+  const text = translateResult.value.trim();
+  if (!text) return;
+  downloadAsFile(text, 'translate');
+}
+
+function downloadAsFile(text, prefix) {
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   chrome.downloads.download({
     url,
-    filename: `qidian-ocr-${timestamp}.txt`,
+    filename: `${prefix}-${timestamp}.txt`,
     saveAs: true
   }, () => {
     setTimeout(() => URL.revokeObjectURL(url), 30000);
