@@ -19,7 +19,8 @@ const state = {
   fragments: [],
   error: '',
   lastRegion: null,
-  stopRequested: false
+  stopRequested: false,
+  retryState: null
 };
 
 // Load saved region on startup
@@ -104,6 +105,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
+  if (message?.type === 'popup:retry') {
+    handleRetry().then((r) => sendResponse(r)).catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
   return false;
 });
 
@@ -139,6 +144,15 @@ async function handleReuseRegion() {
     console.error('Reuse capture failed:', e);
     updateState({ active: false, status: 'Error', error: e.message, progress: 'Failed.' });
   });
+  return { ok: true };
+}
+
+async function handleRetry() {
+  const rs = state.retryState;
+  if (!rs) throw new Error('No retry state saved.');
+  state.retryState = null;
+  updateState({ active: true, status: 'Capturing', progress: 'Retrying...', error: '' });
+  await resumeCaptureLoop(rs);
   return { ok: true };
 }
 
@@ -190,8 +204,22 @@ async function runCaptureLoop(tab, region) {
     const croppedBlob = await cropVisibleCapture(dataUrl, normalizedRegion);
 
     updateState({ progress: `Sending page ${pageNumber} to OCR...` });
-    const text = await postImageForOcr(croppedBlob, pageNumber);
-    fragments.push(text);
+    try {
+      const text = await postImageForOcr(croppedBlob, pageNumber);
+      fragments.push(text);
+    } catch (e) {
+      // Save retry state so user can resume
+      state.retryState = { tab, region: normalizedRegion, winId, fragments, lastScrollY };
+      updateState({
+        active: true,
+        status: 'Error',
+        error: e.message,
+        progress: `Failed on page ${pageNumber}. Click Retry to continue.`,
+        mergedText: mergeFragments(fragments),
+        fragmentsCollected: fragments.length
+      });
+      return;
+    }
 
     updateState({
       fragments,
@@ -217,6 +245,75 @@ async function runCaptureLoop(tab, region) {
     fragments,
     mergedText
   });
+  const finalText = await postTextForDedup(mergedText);
+
+  updateState({
+    active: false,
+    status: 'Done',
+    currentPage: fragments.length,
+    fragmentsCollected: fragments.length,
+    progress: 'Finished.',
+    fragments,
+    mergedText: finalText
+  });
+}
+
+async function resumeCaptureLoop(rs) {
+  const { tab, region, winId, fragments, lastScrollY } = rs;
+  let scrollY = lastScrollY;
+
+  while (true) {
+    if (state.stopRequested) {
+      updateState({ progress: 'Stopped by user.' });
+      break;
+    }
+    const pageNumber = fragments.length + 1;
+    updateState({
+      currentPage: pageNumber,
+      fragmentsCollected: fragments.length,
+      progress: `Capturing page ${pageNumber}...`
+    });
+
+    const dataUrl = await chrome.tabs.captureVisibleTab(winId, { format: 'png' });
+    const croppedBlob = await cropVisibleCapture(dataUrl, region);
+
+    updateState({ progress: `Sending page ${pageNumber} to OCR...` });
+    try {
+      const text = await postImageForOcr(croppedBlob, pageNumber);
+      fragments.push(text);
+    } catch (e) {
+      state.retryState = { tab, region, winId, fragments, lastScrollY: scrollY };
+      updateState({
+        active: true,
+        status: 'Error',
+        error: e.message,
+        progress: `Failed on page ${pageNumber}. Click Retry to continue.`,
+        mergedText: mergeFragments(fragments),
+        fragmentsCollected: fragments.length
+      });
+      return;
+    }
+
+    updateState({
+      fragments,
+      fragmentsCollected: fragments.length,
+      mergedText: mergeFragments(fragments),
+      progress: `Collected ${fragments.length} fragment${fragments.length === 1 ? '' : 's'}.`
+    });
+
+    await sleep(AFTER_SEND_DELAY_MS);
+
+    const scrollResult = await chrome.tabs.sendMessage(tab.id, {
+      type: 'page:scroll-down',
+      overlapPx: OVERLAP_PX
+    });
+
+    if (!scrollResult?.changed || scrollResult.scrollY === scrollY) break;
+    scrollY = scrollResult.scrollY;
+  }
+
+  const mergedText = mergeFragments(fragments);
+  updateState({ progress: 'Deduplicating merged text...', fragments, mergedText });
   const finalText = await postTextForDedup(mergedText);
 
   updateState({

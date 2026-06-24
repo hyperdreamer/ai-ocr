@@ -7,6 +7,7 @@ const resultEl = document.getElementById('result');
 const startButton = document.getElementById('start');
 const reuseButton = document.getElementById('reuse');
 const stopButton = document.getElementById('stop');
+const retryButton = document.getElementById('retry');
 const copyButton = document.getElementById('copy');
 const downloadButton = document.getElementById('download');
 const hostInput = document.getElementById('ocr-host');
@@ -19,6 +20,7 @@ document.addEventListener('DOMContentLoaded', init);
 startButton.addEventListener('click', startCapture);
 reuseButton.addEventListener('click', reuseCapture);
 stopButton.addEventListener('click', stopCapture);
+retryButton.addEventListener('click', retryCapture);
 copyButton.addEventListener('click', copyText);
 downloadButton.addEventListener('click', downloadText);
 hostInput.addEventListener('change', saveSettings);
@@ -87,12 +89,24 @@ async function stopCapture() {
   await chrome.runtime.sendMessage({ type: 'popup:stop' });
 }
 
+async function retryCapture() {
+  retryButton.disabled = true;
+  progressEl.textContent = 'Retrying...';
+  const response = await chrome.runtime.sendMessage({ type: 'popup:retry' });
+  if (!response?.ok) {
+    progressEl.textContent = response?.error || 'Retry failed.';
+    retryButton.disabled = false;
+  }
+}
+
 function renderState(state) {
   latestState = state || {};
   const mergedText = latestState.mergedText || '';
   const hasText = mergedText.trim().length > 0;
   const savedRegion = latestState.lastRegion;
   const isActive = Boolean(latestState.active);
+  const isError = latestState.status === 'Error';
+  const canRetry = isError && latestState.active && state.retryState;
 
   statusEl.textContent = latestState.status || 'Idle';
   currentPageEl.textContent = String(latestState.currentPage || 0);
@@ -104,6 +118,7 @@ function renderState(state) {
   startButton.disabled = isActive;
   reuseButton.disabled = !savedRegion || isActive;
   stopButton.classList.toggle('hidden', !isActive);
+  retryButton.classList.toggle('hidden', !canRetry);
   copyButton.disabled = !hasText;
   downloadButton.disabled = !hasText;
 
