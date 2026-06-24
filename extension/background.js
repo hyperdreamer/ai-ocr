@@ -30,6 +30,10 @@ const state = {
 chrome.storage.local.get('lastRegion', (items) => {
   if (items.lastRegion) state.lastRegion = items.lastRegion;
 });
+// Restore last result from previous session
+chrome.storage.local.get('lastResult', (items) => {
+  if (items.lastResult) state.mergedText = items.lastResult;
+});
 
 // ── keyboard shortcut ──────────────────────────────────────────
 
@@ -371,6 +375,7 @@ async function retryTranslateAndFinalize(finalText, fragments) {
     fragments,
     mergedText: translatedText
   });
+  chrome.storage.local.set({ lastResult: translatedText });
   return translatedText;
 }
 
@@ -538,7 +543,7 @@ function sleep(ms) {
 
 function resetState() {
   Object.assign(state, { active: false, status: 'Idle', currentPage: 0, fragmentsCollected: 0,
-    progress: 'Ready', mergedText: '', fragments: [], error: '', stopRequested: false,
+    progress: 'Ready', fragments: [], error: '', stopRequested: false,
     retryState: null, retryStage: null, pendingText: '' });
   broadcastState();
 }
