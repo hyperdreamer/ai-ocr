@@ -232,7 +232,7 @@
 
     <!-- Translate Panel -->
     <main id="translate-panel" class="hidden">
-      <h1>Translate</h1>
+      <h1>Translation Prompt</h1>
       <div class="settings">
         <label>Language
           <select id="tl-language">
@@ -246,16 +246,7 @@
           </select>
         </label>
       </div>
-      <textarea id="translate-prompt" placeholder="Custom AI prompt (per language). E.g.: Translate to formal academic Chinese." rows="2"></textarea>
-      <textarea id="translate-input" placeholder="Type or paste text to translate..."></textarea>
-      <div class="actions">
-        <button id="tl-translate" type="button">Translate</button>
-      </div>
-      <textarea id="translate-result" readonly placeholder="Translation will appear here."></textarea>
-      <div class="actions">
-        <button id="tl-copy" type="button" disabled>Copy</button>
-        <button id="tl-download" type="button" disabled>Download</button>
-      </div>
+      <textarea id="translate-prompt" placeholder="Custom AI prompt (per language). E.g.: Translate to formal academic Chinese." style="min-height:200px"></textarea>
     </main>
 
     <script src="popup.js"></script>

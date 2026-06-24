@@ -21,11 +21,6 @@ const lastRegionEl = document.getElementById('last-region');
 // ── Translate panel elements ──────────────────────────────────
 const tlLanguage = document.getElementById('tl-language');
 const translatePrompt = document.getElementById('translate-prompt');
-const translateInput = document.getElementById('translate-input');
-const tlTranslateButton = document.getElementById('tl-translate');
-const translateResult = document.getElementById('translate-result');
-const tlCopyButton = document.getElementById('tl-copy');
-const tlDownloadButton = document.getElementById('tl-download');
 
 // ── Tab state ─────────────────────────────────────────────────
 const tabs = document.querySelectorAll('.tab');
@@ -62,12 +57,8 @@ autoscrollCheckbox.addEventListener('change', saveSettings);
 autocopyCheckbox.addEventListener('change', saveSettings);
 
 // ── Translate panel listeners ─────────────────────────────────
-tlTranslateButton.addEventListener('click', doTranslate);
-tlCopyButton.addEventListener('click', copyTlResult);
-tlDownloadButton.addEventListener('click', downloadTlResult);
-translateInput.addEventListener('input', saveTlState);
-translatePrompt.addEventListener('input', saveTlState);
 tlLanguage.addEventListener('change', onTlLanguageChange);
+translatePrompt.addEventListener('input', saveTlState);
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'state:update') {
@@ -100,10 +91,9 @@ async function init() {
     if (fb[resultKey]) resultEl.value = fb[resultKey];
   }
 
-  // Load translate tab state
-  const tl = await chrome.storage.local.get(['tlLanguage', 'translateInput']);
+  // Load translate language and prompt
+  const tl = await chrome.storage.local.get('tlLanguage');
   if (tl.tlLanguage) tlLanguage.value = tl.tlLanguage;
-  if (tl.translateInput) translateInput.value = tl.translateInput;
   await loadPromptForLanguage();
 
   chrome.storage.local.get('lastRegion', (r) => {
@@ -125,13 +115,11 @@ async function saveTlState() {
   const lang = tlLanguage.value;
   await chrome.storage.local.set({
     tlLanguage: lang,
-    translateInput: translateInput.value,
     [`translatePrompt:${lang}`]: translatePrompt.value
   });
 }
 
 async function onTlLanguageChange() {
-  // Save current prompt for old language, then load new language's prompt
   const oldLang = (await chrome.storage.local.get('tlLanguage')).tlLanguage;
   if (oldLang) {
     await chrome.storage.local.set({ [`translatePrompt:${oldLang}`]: translatePrompt.value });
@@ -179,10 +167,12 @@ async function translateOcrText() {
   try {
     const host = hostInput.value.trim() || 'localhost';
     const port = parseInt(portInput.value, 10) || 8000;
-    const stored = await chrome.storage.local.get('translatePrompt');
+    // Load saved prompt for the target language
+    const key = `translatePrompt:${language}`;
+    const stored = await chrome.storage.local.get(key);
     const response = await fetch(`http://${host}:${port}/translate`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, language, prompt: stored.translatePrompt || undefined })
+      body: JSON.stringify({ text, language, prompt: stored[key] || undefined })
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
@@ -238,46 +228,11 @@ async function copyOcrText() {
   try { await navigator.clipboard.writeText(t); copyButton.textContent = 'Copied!'; setTimeout(() => copyButton.textContent = 'Copy', 1500); }
   catch { resultEl.select(); document.execCommand('copy'); }
 }
-function downloadOcrText() { downloadAsFile(resultEl.value.trim(), 'qidian-ocr'); }
-
-// ── Translate panel actions ───────────────────────────────────
-async function doTranslate() {
-  const text = translateInput.value.trim();
-  if (!text) return;
-  const language = tlLanguage.value;
-  tlTranslateButton.disabled = true;
-  try {
-    const host = hostInput.value.trim() || 'localhost';
-    const port = parseInt(portInput.value, 10) || 8000;
-    const prompt = translatePrompt.value.trim() || undefined;
-    const response = await fetch(`http://${host}:${port}/translate`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, language, prompt })
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    if (payload.error) throw new Error(payload.error);
-    translateResult.value = payload.text || '';
-    tlCopyButton.disabled = tlDownloadButton.disabled = false;
-  } catch (e) {
-    translateResult.value = `Error: ${e.message}`;
-  } finally {
-    tlTranslateButton.disabled = false;
-  }
-}
-
-async function copyTlResult() {
-  const t = translateResult.value.trim(); if (!t) return;
-  try { await navigator.clipboard.writeText(t); tlCopyButton.textContent = 'Copied!'; setTimeout(() => tlCopyButton.textContent = 'Copy', 1500); }
-  catch { translateResult.select(); document.execCommand('copy'); }
-}
-function downloadTlResult() { downloadAsFile(translateResult.value.trim(), 'translate'); }
-
-function downloadAsFile(text, prefix) {
-  if (!text) return;
-  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+function downloadOcrText() {
+  const t = resultEl.value.trim(); if (!t) return;
+  const blob = new Blob([t], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  chrome.downloads.download({ url, filename: `${prefix}-${ts}.txt`, saveAs: true },
+  chrome.downloads.download({ url, filename: `qidian-ocr-${ts}.txt`, saveAs: true },
     () => setTimeout(() => URL.revokeObjectURL(url), 30000));
 }
