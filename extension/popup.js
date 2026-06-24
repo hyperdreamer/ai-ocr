@@ -61,20 +61,20 @@ downloadButton.addEventListener('click', downloadOcrText);
 resultEl.addEventListener('input', saveOcrText);
 hostInput.addEventListener('change', saveSettings);
 portInput.addEventListener('change', saveSettings);
-languageSelect.addEventListener('change', saveSettings);
+languageSelect.addEventListener('change', () => { saveSettings(); syncLanguage('ocr'); });
 autoscrollCheckbox.addEventListener('change', saveSettings);
 autocopyCheckbox.addEventListener('change', saveSettings);
 autotranslateCheckbox.addEventListener('change', saveSettings);
 
 // ── Translate panel listeners ─────────────────────────────────
-tlLanguage.addEventListener('change', onTlLanguageChange);
+tlLanguage.addEventListener('change', () => { onTlLanguageChange(); syncLanguage('prompt'); });
 translatePrompt.addEventListener('input', saveTlState);
 
 // ── Translation panel listeners ───────────────────────────────
 tl2Translate.addEventListener('click', doTranslation);
 tl2Copy.addEventListener('click', () => copyResult(tl2Result, tl2Copy));
 tl2Download.addEventListener('click', () => downloadAsFile(tl2Result.value.trim(), 'translate'));
-tl2Language.addEventListener('change', saveTl2Language);
+tl2Language.addEventListener('change', () => { saveTl2Language(); syncLanguage('translation'); });
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'state:update') {
@@ -104,6 +104,8 @@ async function init() {
   hostInput.value = items.ocrHost;
   portInput.value = items.ocrPort;
   languageSelect.value = items.ocrLanguage;
+  tlLanguage.value = items.ocrLanguage;
+  tl2Language.value = items.ocrLanguage;
   autoscrollCheckbox.checked = items.ocrAutoscroll;
   autocopyCheckbox.checked = items.ocrAutoCopy;
   autotranslateCheckbox.checked = items.ocrAutoTranslate;
@@ -158,6 +160,21 @@ async function saveTlState() {
 async function saveTl2Language() {
   if (!currentTabId) return;
   await chrome.storage.local.set({ [`tl2Language:${currentTabId}`]: tl2Language.value });
+}
+
+function syncLanguage(source) {
+  const lang = {
+    ocr: languageSelect,
+    prompt: tlLanguage,
+    translation: tl2Language
+  }[source];
+  if (!lang) return;
+  const value = lang.value;
+  if (source !== 'ocr') languageSelect.value = value;
+  if (source !== 'prompt') tlLanguage.value = value;
+  if (source !== 'translation') tl2Language.value = value;
+  saveSettings();
+  if (source !== 'translation') saveTl2Language();
 }
 
 async function onTlLanguageChange() {
