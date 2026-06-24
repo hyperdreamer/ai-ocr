@@ -101,6 +101,19 @@ chrome.runtime.onMessage.addListener((message) => {
     tl2Copy.disabled = tl2Download.disabled = true;
     setTl2Progress('Translating...');
   }
+  if (message?.type === 'tl2:translating') {
+    if (message.tabId !== currentTabId) return;
+    if (message.value) {
+      tl2Translate.textContent = 'Stop';
+      tl2Translate.classList.add('danger');
+      tl2Copy.disabled = tl2Download.disabled = true;
+      setTl2Progress('Translating...');
+    } else {
+      tl2Translate.textContent = 'Translate';
+      tl2Translate.classList.remove('danger');
+      updateTranslationButtons();
+    }
+  }
 });
 
 // ── Init ──────────────────────────────────────────────────────
