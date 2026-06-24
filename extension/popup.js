@@ -6,18 +6,36 @@ const progressEl = document.getElementById('progress');
 const resultEl = document.getElementById('result');
 const startButton = document.getElementById('start');
 const downloadButton = document.getElementById('download');
+const hostInput = document.getElementById('ocr-host');
+const portInput = document.getElementById('ocr-port');
 
 let latestState = null;
 
-document.addEventListener('DOMContentLoaded', refreshState);
+document.addEventListener('DOMContentLoaded', init);
 startButton.addEventListener('click', startCapture);
 downloadButton.addEventListener('click', downloadText);
+hostInput.addEventListener('change', saveSettings);
+portInput.addEventListener('change', saveSettings);
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'state:update') {
     renderState(message.state);
   }
 });
+
+async function init() {
+  const items = await chrome.storage.sync.get({ ocrHost: 'localhost', ocrPort: 8000 });
+  hostInput.value = items.ocrHost;
+  portInput.value = items.ocrPort;
+  await refreshState();
+}
+
+async function saveSettings() {
+  await chrome.storage.sync.set({
+    ocrHost: hostInput.value.trim() || 'localhost',
+    ocrPort: parseInt(portInput.value, 10) || 8000
+  });
+}
 
 async function refreshState() {
   const response = await chrome.runtime.sendMessage({ type: 'popup:get-state' });

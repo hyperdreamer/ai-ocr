@@ -59,6 +59,30 @@
         color: #334155;
       }
 
+      .settings {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+
+      .settings label {
+        flex: 1;
+        color: #64748b;
+        font-size: 11px;
+        text-transform: uppercase;
+      }
+
+      .settings input {
+        box-sizing: border-box;
+        width: 100%;
+        margin-top: 2px;
+        padding: 5px 7px;
+        border: 1px solid #cbd5e1;
+        border-radius: 5px;
+        color: #111827;
+        font-size: 12px;
+      }
+
       textarea {
         box-sizing: border-box;
         width: 100%;
@@ -125,6 +149,10 @@
         </div>
       </section>
       <div id="progress">Ready</div>
+      <div class="settings">
+        <label>Host <input id="ocr-host" type="text" placeholder="localhost"></label>
+        <label>Port <input id="ocr-port" type="number" placeholder="8000"></label>
+      </div>
       <textarea id="result" readonly placeholder="Merged OCR text will appear here."></textarea>
       <div class="actions">
         <button id="start" type="button" class="secondary">Select Region</button>

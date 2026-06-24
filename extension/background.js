@@ -1,6 +1,12 @@
-const OCR_ENDPOINT = 'http://localhost:8000/ocr';
+const DEFAULT_HOST = 'localhost';
+const DEFAULT_PORT = 8000;
 const OVERLAP_PX = 50;
 const AFTER_SEND_DELAY_MS = 1000;
+
+async function getOcrEndpoint() {
+  const items = await chrome.storage.sync.get({ ocrHost: DEFAULT_HOST, ocrPort: DEFAULT_PORT });
+  return `http://${items.ocrHost}:${items.ocrPort}/ocr`;
+}
 
 const state = {
   active: false,
@@ -168,7 +174,7 @@ async function postImageForOcr(blob, pageNumber) {
   const formData = new FormData();
   formData.append('image', blob, `qidian-page-${String(pageNumber).padStart(4, '0')}.png`);
 
-  const response = await fetch(OCR_ENDPOINT, {
+  const response = await fetch(await getOcrEndpoint(), {
     method: 'POST',
     body: formData
   });
