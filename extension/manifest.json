@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Qidian OCR Capture",
+  "version": "1.0.0",
+  "description": "Select a page region, OCR repeated viewport captures, and download merged text.",
+  "permissions": [
+    "activeTab",
+    "tabs",
+    "scripting",
+    "downloads"
+  ],
+  "host_permissions": [
+    "http://localhost:8000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Qidian OCR Capture"
+  },
+  "commands": {
+    "start-region-capture": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+O",
+        "mac": "Command+Shift+O"
+      },
+      "description": "Select a region and start OCR capture"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "overlay.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+# Server bind address. Defaults to "0.0.0.0" when omitted.
+host: "0.0.0.0"
+
+# Server port. Defaults to 8000 when omitted.
+port: 8000
+
+# AI provider settings.
+ai:
+  # Supported values: "openai" or "anthropic".
+  provider: "openai"
+
+  # Base URL for the provider API, without a trailing slash.
+  # OpenAI-compatible providers must expose /v1/chat/completions.
+  # Anthropic-compatible providers must expose /v1/messages.
+  api_base: "https://api.openai.com"
+
+  # Name of the environment variable that contains the API key.
+  # The backend also falls back to OCR_API_KEY and provider-specific defaults.
+  # Examples: OCR_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY.
+  api_key: "OCR_API_KEY"
+
+  # Vision-capable model name to use for OCR.
+  model: "gpt-4.1-mini"

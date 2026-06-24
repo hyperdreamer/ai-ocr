@@ -1,0 +1,31 @@
+.qidian-ocr-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  cursor: crosshair;
+  background: rgba(0, 0, 0, 0.36);
+  user-select: none;
+}
+
+.qidian-ocr-selection {
+  position: fixed;
+  box-sizing: border-box;
+  border: 2px solid #25a5ff;
+  background: rgba(37, 165, 255, 0.16);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.32);
+  pointer-events: none;
+}
+
+.qidian-ocr-hint {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(17, 24, 39, 0.94);
+  color: #fff;
+  font: 13px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  pointer-events: none;
+  white-space: nowrap;
+}
