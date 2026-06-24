@@ -52,12 +52,6 @@
     handles = [...overlay.querySelectorAll('.qidian-ocr-handle')];
     const hint = overlay.querySelector('.qidian-ocr-hint');
 
-    // Double-click on selection area confirms
-    selection.addEventListener('dblclick', (e) => {
-      e.stopPropagation();
-      confirmSelection();
-    });
-
     // Pre-draw saved region if available
     if (saved && saved.width >= MIN_SIZE && saved.height >= MIN_SIZE) {
       region = {
@@ -66,7 +60,7 @@
         width: clamp(saved.width, MIN_SIZE, window.innerWidth - clamp(saved.x, 0, window.innerWidth)),
         height: clamp(saved.height, MIN_SIZE, window.innerHeight - clamp(saved.y, 0, window.innerHeight))
       };
-      hint.textContent = 'Drag to adjust. Double-click to confirm. Esc to cancel.';
+      hint.textContent = 'Drag to adjust. Ctrl+Space to confirm. Esc to cancel.';
     } else {
       region = { x: 0, y: 0, width: 0, height: 0 };
       hint.textContent = 'Drag to select OCR region. Press Esc to cancel.';
@@ -206,6 +200,10 @@
     if (event.key === 'Escape') {
       removeOverlay();
       chrome.runtime.sendMessage({ type: 'selection:cancelled' });
+    }
+    if (event.key === ' ' && event.ctrlKey) {
+      event.preventDefault();
+      confirmSelection();
     }
   }
 
