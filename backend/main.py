@@ -326,3 +326,10 @@ async def ocr(image: UploadFile | None = File(default=None)) -> OCRResponse:
     image_bytes = await image.read()
     data_url = _image_to_data_url(image_bytes, image.content_type)
     return await transcribe_image(config.ai, data_url)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    cfg = load_config()
+    uvicorn.run(app, host=cfg.host, port=cfg.port)
