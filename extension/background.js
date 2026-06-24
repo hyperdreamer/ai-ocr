@@ -2,11 +2,11 @@
 const DEFAULT_HOST = 'localhost';
 const DEFAULT_PORT = 8000;
 const OVERLAP_PX = 50;
-const AFTER_SEND_DELAY_MS = 1000;
+const AFTER_SEND_DELAY_MS = 200;
 
-async function getOcrEndpoint() {
+async function getBackendEndpoint(path) {
   const items = await chrome.storage.sync.get({ ocrHost: DEFAULT_HOST, ocrPort: DEFAULT_PORT });
-  return `http://${items.ocrHost}:${items.ocrPort}/ocr`;
+  return `http://${items.ocrHost}:${items.ocrPort}${path}`;
 }
 
 const state = {
@@ -145,6 +145,14 @@ async function runCaptureLoop(tab, region) {
     lastScrollY = scrollResult.scrollY;
   }
 
+  const mergedText = mergeFragments(fragments);
+  updateState({
+    progress: 'Deduplicating merged text...',
+    fragments,
+    mergedText
+  });
+  const finalText = await postTextForDedup(mergedText);
+
   updateState({
     active: false,
     status: 'Done',
@@ -152,8 +160,9 @@ async function runCaptureLoop(tab, region) {
     fragmentsCollected: fragments.length,
     progress: 'Finished.',
     fragments,
-    mergedText: mergeFragments(fragments)
+    mergedText: finalText
   });
+  chrome.runtime.sendMessage({ type: 'popup:auto-download' }).catch(() => {});
 }
 
 // ── crop ───────────────────────────────────────────────────────
@@ -184,7 +193,7 @@ async function postImageForOcr(blob, pageNumber) {
   const formData = new FormData();
   formData.append('image', blob, `page-${String(pageNumber).padStart(4, '0')}.png`);
 
-  const url = await getOcrEndpoint();
+  const url = await getBackendEndpoint('/ocr');
   const response = await fetch(url, { method: 'POST', body: formData });
 
   if (!response.ok) {
@@ -199,6 +208,23 @@ async function postImageForOcr(blob, pageNumber) {
     return String(t).trim();
   }
   return (await response.text()).trim();
+}
+
+async function postTextForDedup(text) {
+  const url = await getBackendEndpoint('/dedup');
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Dedup HTTP ${response.status}: ${await response.text().catch(() => '')}`);
+  }
+
+  const payload = await response.json();
+  if (payload.error) throw new Error(`Dedup backend error: ${payload.error}`);
+  return String(payload.text ?? '').trim();
 }
 
 // ── merge logic ────────────────────────────────────────────────

@@ -22,6 +22,10 @@ CONFIG_PATH = Path(__file__).with_name("config.yaml")
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8000
 OCR_PROMPT = "Transcribe all text visible in this image. Return only the transcription."
+DEDUP_PROMPT = (
+    "Remove any duplicate or overlapping content. Return only the deduplicated text. "
+    "Do not reword or change any text -- only remove exact duplicates and overlapping passages."
+)
 
 
 class OCRResponse(BaseModel):
@@ -31,6 +35,12 @@ class OCRResponse(BaseModel):
     model: str
     tokens_used: int
     error: str | None = None
+
+
+class DedupRequest(BaseModel):
+    """Request body accepted by the dedup endpoint."""
+
+    text: str
 
 
 @dataclass(frozen=True)
@@ -175,20 +185,12 @@ def _extract_anthropic_text(payload: dict[str, Any]) -> str:
     ).strip()
 
 
-async def _call_openai(config: AIConfig, data_url: str) -> OCRResponse:
-    """Send the image to an OpenAI-compatible /v1/chat/completions API."""
+async def _post_openai_chat_completion(config: AIConfig, messages: list[dict[str, Any]]) -> OCRResponse:
+    """Send messages to an OpenAI-compatible /v1/chat/completions API."""
 
     request_body = {
         "model": config.model,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": OCR_PROMPT},
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                ],
-            }
-        ],
+        "messages": messages,
     }
     headers = {"Authorization": f"Bearer {config.api_key}"}
 
@@ -218,6 +220,23 @@ async def _call_openai(config: AIConfig, data_url: str) -> OCRResponse:
     )
 
 
+async def _call_openai(config: AIConfig, data_url: str) -> OCRResponse:
+    """Send the image to an OpenAI-compatible /v1/chat/completions API."""
+
+    return await _post_openai_chat_completion(
+        config,
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": OCR_PROMPT},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        ],
+    )
+
+
 def _anthropic_image_source(data_url: str) -> dict[str, str]:
     """Convert a data URL into Anthropic's base64 image source shape."""
 
@@ -226,21 +245,13 @@ def _anthropic_image_source(data_url: str) -> dict[str, str]:
     return {"type": "base64", "media_type": media_type, "data": encoded}
 
 
-async def _call_anthropic(config: AIConfig, data_url: str) -> OCRResponse:
-    """Send the image to Anthropic's /v1/messages API."""
+async def _post_anthropic_message(config: AIConfig, messages: list[dict[str, Any]]) -> OCRResponse:
+    """Send messages to Anthropic's /v1/messages API."""
 
     request_body = {
         "model": config.model,
         "max_tokens": 4096,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": OCR_PROMPT},
-                    {"type": "image", "source": _anthropic_image_source(data_url)},
-                ],
-            }
-        ],
+        "messages": messages,
     }
     headers = {
         "x-api-key": config.api_key,
@@ -274,6 +285,23 @@ async def _call_anthropic(config: AIConfig, data_url: str) -> OCRResponse:
     )
 
 
+async def _call_anthropic(config: AIConfig, data_url: str) -> OCRResponse:
+    """Send the image to Anthropic's /v1/messages API."""
+
+    return await _post_anthropic_message(
+        config,
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": OCR_PROMPT},
+                    {"type": "image", "source": _anthropic_image_source(data_url)},
+                ],
+            }
+        ],
+    )
+
+
 async def transcribe_image(config: AIConfig, data_url: str) -> OCRResponse:
     """Route an OCR request to the configured provider."""
 
@@ -281,6 +309,34 @@ async def transcribe_image(config: AIConfig, data_url: str) -> OCRResponse:
         return await _call_openai(config, data_url)
     if config.provider == "anthropic":
         return await _call_anthropic(config, data_url)
+
+    raise HTTPException(status_code=400, detail=f"Unsupported AI provider: {config.provider}")
+
+
+async def deduplicate_text(config: AIConfig, text: str) -> OCRResponse:
+    """Route a deduplication request to the configured provider."""
+
+    if config.provider == "openai":
+        return await _post_openai_chat_completion(
+            config,
+            [
+                {"role": "system", "content": DEDUP_PROMPT},
+                {"role": "user", "content": text},
+            ],
+        )
+    if config.provider == "anthropic":
+        return await _post_anthropic_message(
+            config,
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": DEDUP_PROMPT},
+                        {"type": "text", "text": text},
+                    ],
+                }
+            ],
+        )
 
     raise HTTPException(status_code=400, detail=f"Unsupported AI provider: {config.provider}")
 
@@ -326,6 +382,21 @@ async def ocr(image: UploadFile | None = File(default=None)) -> OCRResponse:
     image_bytes = await image.read()
     data_url = _image_to_data_url(image_bytes, image.content_type)
     return await transcribe_image(config.ai, data_url)
+
+
+@app.post("/dedup", response_model=OCRResponse)
+async def dedup(request: DedupRequest) -> OCRResponse:
+    """Accept merged OCR text and return deduplicated text from the configured AI model."""
+
+    try:
+        config = load_config()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if config.ai is None:
+        raise HTTPException(status_code=500, detail="AI provider configuration is missing")
+
+    return await deduplicate_text(config.ai, request.text)
 
 
 if __name__ == "__main__":

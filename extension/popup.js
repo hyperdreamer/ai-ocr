@@ -21,6 +21,9 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'state:update') {
     renderState(message.state);
   }
+  if (message?.type === 'popup:auto-download') {
+    downloadText();
+  }
 });
 
 async function init() {
