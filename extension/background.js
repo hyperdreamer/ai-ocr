@@ -204,17 +204,12 @@ async function runCaptureLoop(tab, region) {
 
   const fragments = [];
   let lastScrollY = -1;
+  const { ocrAutoscroll } = await chrome.storage.sync.get({ ocrAutoscroll: true });
 
   while (true) {
     if (state.stopRequested) {
       await finalizePostCapture(mergeFragments(fragments), fragments);
       return;
-    }
-    // Check autoscroll setting
-    const { ocrAutoscroll } = await chrome.storage.sync.get({ ocrAutoscroll: true });
-    if (!ocrAutoscroll && fragments.length > 0) {
-      updateState({ progress: 'Single capture complete (autoscroll off).' });
-      break;
     }
     const pageNumber = fragments.length + 1;
     updateState({
@@ -252,6 +247,8 @@ async function runCaptureLoop(tab, region) {
     });
 
     await sleep(AFTER_SEND_DELAY_MS);
+
+    if (!ocrAutoscroll) break;
 
     const scrollResult = await chrome.tabs.sendMessage(tab.id, {
       type: 'page:scroll-down',
@@ -321,6 +318,8 @@ async function resumeCaptureLoop(rs) {
     });
 
     await sleep(AFTER_SEND_DELAY_MS);
+
+    if (!ocrAutoscroll) break;
 
     const scrollResult = await chrome.tabs.sendMessage(tab.id, {
       type: 'page:scroll-down',
