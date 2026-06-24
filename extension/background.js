@@ -10,29 +10,37 @@ async function getBackendEndpoint(path) {
   return `http://${items.ocrHost}:${items.ocrPort}${path}`;
 }
 
-const state = {
-  active: false,
-  status: 'Idle',
-  currentPage: 0,
-  fragmentsCollected: 0,
-  progress: 'Ready',
-  mergedText: '',
-  fragments: [],
-  error: '',
-  lastRegion: null,
-  stopRequested: false,
-  retryState: null,
-  retryStage: null,
-  pendingText: ''
-};
+let states = new Map();
+let savedLastRegion = null;
+let savedLastResult = '';
+
+function getState(tabId) {
+  if (!states.has(tabId)) {
+    states.set(tabId, {
+      active: false, status: 'Idle', currentPage: 0, fragmentsCollected: 0,
+      progress: 'Ready', mergedText: savedLastResult, fragments: [], error: '',
+      lastRegion: savedLastRegion, stopRequested: false, retryState: null,
+      retryStage: null, pendingText: ''
+    });
+  }
+  return states.get(tabId);
+}
 
 // Load saved region on startup
 chrome.storage.local.get('lastRegion', (items) => {
-  if (items.lastRegion) state.lastRegion = items.lastRegion;
+  if (items.lastRegion) {
+    savedLastRegion = items.lastRegion;
+    states.forEach((state) => { state.lastRegion = savedLastRegion; });
+  }
 });
 // Restore last result from previous session
 chrome.storage.local.get('lastResult', (items) => {
-  if (items.lastResult) state.mergedText = items.lastResult;
+  if (items.lastResult) {
+    savedLastResult = items.lastResult;
+    states.forEach((state) => {
+      if (!state.mergedText) state.mergedText = savedLastResult;
+    });
+  }
 });
 
 // ── keyboard shortcut ──────────────────────────────────────────
@@ -42,20 +50,20 @@ chrome.commands.onCommand.addListener(async (command) => {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id) {
-      updateState({ status: 'Error', error: 'No active tab found.' });
       return;
     }
     await ensureContentScript(tab.id);
 
-    resetState();
-    updateState({ active: true, status: 'Selecting', progress: 'Drag a rectangle.' });
+    resetState(tab.id);
+    updateState(tab.id, { active: true, status: 'Selecting', progress: 'Drag a rectangle.' });
     await chrome.tabs.sendMessage(tab.id, {
       type: 'selection:start',
-      lastRegion: state.lastRegion || undefined
+      lastRegion: getState(tab.id).lastRegion || undefined
     });
   } catch (e) {
     console.error('Command handler failed:', e);
-    updateState({ active: false, status: 'Error', error: e.message, progress: 'Failed.' });
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) updateState(tab.id, { active: false, status: 'Error', error: e.message, progress: 'Failed.' });
   }
 });
 
@@ -67,21 +75,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message?.type === 'popup:get-state') {
-    sendResponse({ ok: true, state });
-    return false;
+    getActiveTab()
+      .then((tab) => sendResponse({ ok: true, state: getState(tab.id), tabId: tab.id }))
+      .catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
   }
   if (message?.type === 'selection:complete') {
+    const tabId = sender.tab?.id;
+    if (!tabId) {
+      sendResponse({ ok: false, error: 'No sender tab found.' });
+      return false;
+    }
     // Remember region for reuse
     const { x, y, width, height } = message.region;
     const saved = { x, y, width, height };
     chrome.storage.local.set({ lastRegion: saved });
-    state.lastRegion = saved;
-    broadcastState();
+    savedLastRegion = saved;
+    states.forEach((state) => { state.lastRegion = saved; });
+    broadcastState(tabId);
     runCaptureLoop(sender.tab, message.region)
       .then(() => sendResponse({ ok: true }))
       .catch((error) => {
         console.error('Capture loop failed:', error);
-        updateState({ active: false, status: 'Error', error: error.message, progress: 'Failed.' });
+        updateState(tabId, { active: false, status: 'Error', error: error.message, progress: 'Failed.' });
         sendResponse({ ok: false, error: error.message });
       });
     return true;
@@ -91,19 +107,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message?.type === 'selection:cancelled') {
-    updateState({ active: false, status: 'Cancelled', progress: 'Selection cancelled.' });
+    const tabId = sender.tab?.id;
+    if (tabId) updateState(tabId, { active: false, status: 'Cancelled', progress: 'Selection cancelled.' });
     return false;
   }
   if (message?.type === 'popup:stop') {
-    state.stopRequested = true;
-    // If in error state (waiting for retry), finalize collected fragments now
-    if (state.status === 'Error' && state.fragments?.length > 0) {
-      finalizePostCapture(mergeFragments(state.fragments), state.fragments);
-    } else {
-      updateState({ progress: 'Stopping...' });
-    }
-    sendResponse({ ok: true });
-    return false;
+    handleStop().then((r) => sendResponse(r)).catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
   }
   if (message?.type === 'popup:retry') {
     handleRetry().then((r) => sendResponse(r)).catch((e) => sendResponse({ ok: false, error: e.message }));
@@ -115,23 +125,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ── popup start ────────────────────────────────────────────────
 
 async function handlePopupStart() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) throw new Error('No active tab found.');
+  const tab = await getActiveTab();
   await ensureContentScript(tab.id);
-  resetState();
-  updateState({ active: true, status: 'Selecting', progress: 'Drag a rectangle.' });
+  resetState(tab.id);
+  updateState(tab.id, { active: true, status: 'Selecting', progress: 'Drag a rectangle.' });
   await chrome.tabs.sendMessage(tab.id, {
     type: 'selection:start',
-    lastRegion: state.lastRegion || undefined
+    lastRegion: getState(tab.id).lastRegion || undefined
   });
   return { ok: true };
 }
 
 async function handleReuseRegion() {
-  const region = state.lastRegion;
+  const tab = await getActiveTab();
+  const region = getState(tab.id).lastRegion;
   if (!region) throw new Error('No saved region. Select a region first.');
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) throw new Error('No active tab found.');
   if (tab.windowId == null || tab.windowId < 0) throw new Error('Invalid windowId.');
   await ensureContentScript(tab.id);
   // Get actual viewport dimensions from the content script
@@ -145,32 +153,53 @@ async function handleReuseRegion() {
   // Run capture directly — no overlay needed
   runCaptureLoop(tab, fullRegion).catch((e) => {
     console.error('Reuse capture failed:', e);
-    updateState({ active: false, status: 'Error', error: e.message, progress: 'Failed.' });
+    updateState(tab.id, { active: false, status: 'Error', error: e.message, progress: 'Failed.' });
   });
   return { ok: true };
 }
 
+async function handleStop() {
+  const tab = await getActiveTab();
+  const state = getState(tab.id);
+  state.stopRequested = true;
+  // If in error state (waiting for retry), finalize collected fragments now
+  if (state.status === 'Error' && state.fragments?.length > 0) {
+    finalizePostCapture(tab.id, mergeFragments(state.fragments), state.fragments);
+  } else {
+    updateState(tab.id, { progress: 'Stopping...' });
+  }
+  return { ok: true };
+}
+
 async function handleRetry() {
+  const tab = await getActiveTab();
+  const state = getState(tab.id);
   if (state.retryStage === 'dedup') {
     const pendingText = state.pendingText;
-    updateState({ active: true, status: 'Deduplicating', progress: 'Retrying dedup...', error: '' });
-    await finalizePostCapture(pendingText, state.fragments || []);
+    updateState(tab.id, { active: true, status: 'Deduplicating', progress: 'Retrying dedup...', error: '' });
+    await finalizePostCapture(tab.id, pendingText, state.fragments || []);
     return { ok: true };
   }
 
   if (state.retryStage === 'translate') {
     const pendingText = state.pendingText;
-    updateState({ active: true, status: 'Translating', progress: 'Retrying translation...', error: '' });
-    const translatedText = await retryTranslateAndFinalize(pendingText, state.fragments || []);
+    updateState(tab.id, { active: true, status: 'Translating', progress: 'Retrying translation...', error: '' });
+    const translatedText = await retryTranslateAndFinalize(tab.id, pendingText, state.fragments || []);
     return { ok: true, translatedText };
   }
 
   const rs = state.retryState;
   if (!rs) throw new Error('No retry state saved.');
   state.retryState = null;
-  updateState({ active: true, status: 'Capturing', progress: 'Retrying...', error: '' });
+  updateState(tab.id, { active: true, status: 'Capturing', progress: 'Retrying...', error: '' });
   await resumeCaptureLoop(rs);
   return { ok: true };
+}
+
+async function getActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) throw new Error('No active tab found.');
+  return tab;
 }
 
 // ── ensure content script is loaded ────────────────────────────
@@ -193,14 +222,16 @@ async function runCaptureLoop(tab, region) {
   const winId = tab?.windowId;
   if (!tab?.id) throw new Error('Missing tab id.');
   if (winId == null || winId < 0) throw new Error('Invalid windowId for capture.');
+  const tabId = tab.id;
+  const state = getState(tabId);
 
   const normalizedRegion = normalizeRegion(region);
   if (normalizedRegion.width < 2 || normalizedRegion.height < 2) {
     throw new Error('Selected region is too small.');
   }
 
-  resetState();
-  updateState({ active: true, status: 'Capturing', progress: 'Starting capture loop.' });
+  resetState(tabId);
+  updateState(tabId, { active: true, status: 'Capturing', progress: 'Starting capture loop.' });
 
   const fragments = [];
   let lastScrollY = -1;
@@ -208,11 +239,11 @@ async function runCaptureLoop(tab, region) {
 
   while (true) {
     if (state.stopRequested) {
-      await finalizePostCapture(mergeFragments(fragments), fragments);
+      await finalizePostCapture(tabId, mergeFragments(fragments), fragments);
       return;
     }
     const pageNumber = fragments.length + 1;
-    updateState({
+    updateState(tabId, {
       currentPage: pageNumber,
       fragmentsCollected: fragments.length,
       progress: `Capturing page ${pageNumber}...`
@@ -221,14 +252,14 @@ async function runCaptureLoop(tab, region) {
     const dataUrl = await chrome.tabs.captureVisibleTab(winId, { format: 'png' });
     const croppedBlob = await cropVisibleCapture(dataUrl, normalizedRegion);
 
-    updateState({ progress: `Sending page ${pageNumber} to OCR...` });
+    updateState(tabId, { progress: `Sending page ${pageNumber} to OCR...` });
     try {
       const text = await postImageForOcr(croppedBlob, pageNumber);
       fragments.push(text);
     } catch (e) {
       // Save retry state so user can resume
       state.retryState = { tab, region: normalizedRegion, winId, fragments, lastScrollY };
-      updateState({
+      updateState(tabId, {
         active: true,
         status: 'Error',
         error: e.message,
@@ -239,7 +270,7 @@ async function runCaptureLoop(tab, region) {
       return;
     }
 
-    updateState({
+    updateState(tabId, {
       fragments,
       fragmentsCollected: fragments.length,
       mergedText: mergeFragments(fragments),
@@ -260,31 +291,34 @@ async function runCaptureLoop(tab, region) {
   }
 
   const mergedText = mergeFragments(fragments);
-  updateState({
+  updateState(tabId, {
     progress: 'Deduplicating merged text...',
     fragments,
     mergedText
   });
-  await finalizePostCapture(mergedText, fragments);
+  await finalizePostCapture(tabId, mergedText, fragments);
 }
 
 async function resumeCaptureLoop(rs) {
   const { tab, region, winId, fragments, lastScrollY } = rs;
+  if (!tab?.id) throw new Error('Missing tab id.');
+  const tabId = tab.id;
+  const state = getState(tabId);
   let scrollY = lastScrollY;
 
   while (true) {
     if (state.stopRequested) {
-      await finalizePostCapture(mergeFragments(fragments), fragments);
+      await finalizePostCapture(tabId, mergeFragments(fragments), fragments);
       return;
     }
     // Check autoscroll setting
     const { ocrAutoscroll } = await chrome.storage.sync.get({ ocrAutoscroll: true });
     if (!ocrAutoscroll && fragments.length > 0) {
-      updateState({ progress: 'Single capture complete (autoscroll off).' });
+      updateState(tabId, { progress: 'Single capture complete (autoscroll off).' });
       break;
     }
     const pageNumber = fragments.length + 1;
-    updateState({
+    updateState(tabId, {
       currentPage: pageNumber,
       fragmentsCollected: fragments.length,
       progress: `Capturing page ${pageNumber}...`
@@ -293,13 +327,13 @@ async function resumeCaptureLoop(rs) {
     const dataUrl = await chrome.tabs.captureVisibleTab(winId, { format: 'png' });
     const croppedBlob = await cropVisibleCapture(dataUrl, region);
 
-    updateState({ progress: `Sending page ${pageNumber} to OCR...` });
+    updateState(tabId, { progress: `Sending page ${pageNumber} to OCR...` });
     try {
       const text = await postImageForOcr(croppedBlob, pageNumber);
       fragments.push(text);
     } catch (e) {
       state.retryState = { tab, region, winId, fragments, lastScrollY: scrollY };
-      updateState({
+      updateState(tabId, {
         active: true,
         status: 'Error',
         error: e.message,
@@ -310,7 +344,7 @@ async function resumeCaptureLoop(rs) {
       return;
     }
 
-    updateState({
+    updateState(tabId, {
       fragments,
       fragmentsCollected: fragments.length,
       mergedText: mergeFragments(fragments),
@@ -331,11 +365,12 @@ async function resumeCaptureLoop(rs) {
   }
 
   const mergedText = mergeFragments(fragments);
-  updateState({ progress: 'Deduplicating merged text...', fragments, mergedText });
-  await finalizePostCapture(mergedText, fragments);
+  updateState(tabId, { progress: 'Deduplicating merged text...', fragments, mergedText });
+  await finalizePostCapture(tabId, mergedText, fragments);
 }
 
-async function finalizePostCapture(mergedText, fragments) {
+async function finalizePostCapture(tabId, mergedText, fragments) {
+  const state = getState(tabId);
   let finalText;
   try {
     finalText = await postTextForDedup(mergedText);
@@ -344,7 +379,8 @@ async function finalizePostCapture(mergedText, fragments) {
     state.retryStage = 'dedup';
     state.pendingText = mergedText;
     chrome.storage.local.set({ lastResult: mergedText });
-    updateState({
+    savedLastResult = mergedText;
+    updateState(tabId, {
       active: true,
       status: 'Error',
       error: 'Dedup failed. Click Retry.',
@@ -356,21 +392,23 @@ async function finalizePostCapture(mergedText, fragments) {
     return;
   }
 
-  await retryTranslateAndFinalize(finalText, fragments);
+  await retryTranslateAndFinalize(tabId, finalText, fragments);
 }
 
-async function retryTranslateAndFinalize(finalText, fragments) {
+async function retryTranslateAndFinalize(tabId, finalText, fragments) {
+  const state = getState(tabId);
   let translatedText;
   try {
     state.retryStage = null;
     state.pendingText = '';
-    translatedText = await translateIfNeeded(finalText);
+    translatedText = await translateIfNeeded(tabId, finalText);
   } catch (e) {
     console.error('Translation failed:', e);
     state.retryStage = 'translate';
     state.pendingText = finalText;
     chrome.storage.local.set({ lastResult: finalText });
-    updateState({
+    savedLastResult = finalText;
+    updateState(tabId, {
       active: true,
       status: 'Error',
       error: 'Translation failed. Click Retry.',
@@ -384,7 +422,7 @@ async function retryTranslateAndFinalize(finalText, fragments) {
 
   state.retryStage = null;
   state.pendingText = '';
-  updateState({
+  updateState(tabId, {
     active: false,
     status: 'Done',
     currentPage: fragments.length,
@@ -394,6 +432,7 @@ async function retryTranslateAndFinalize(finalText, fragments) {
     mergedText: translatedText
   });
   chrome.storage.local.set({ lastResult: translatedText });
+  savedLastResult = translatedText;
   const { ocrAutoCopy } = await chrome.storage.sync.get({ ocrAutoCopy: true });
   if (ocrAutoCopy) copyToClipboard(translatedText);
   return translatedText;
@@ -461,12 +500,12 @@ async function postTextForDedup(text) {
   return String(payload.text ?? '').trim();
 }
 
-async function translateIfNeeded(text) {
+async function translateIfNeeded(tabId, text) {
   const items = await chrome.storage.sync.get({ ocrLanguage: DEFAULT_LANGUAGE });
   const language = items.ocrLanguage || DEFAULT_LANGUAGE;
   if (language === DEFAULT_LANGUAGE) return text;
 
-  updateState({ progress: `Translating to ${language}...` });
+  updateState(tabId, { progress: `Translating to ${language}...` });
   return postTextForTranslation(text, language);
 }
 
@@ -561,11 +600,23 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function resetState() {
-  Object.assign(state, { active: false, status: 'Idle', currentPage: 0, fragmentsCollected: 0,
-    progress: 'Ready', fragments: [], error: '', stopRequested: false,
-    retryState: null, retryStage: null, pendingText: '' });
-  broadcastState();
+function resetState(tabId) {
+  Object.assign(getState(tabId), {
+    active: false,
+    status: 'Idle',
+    currentPage: 0,
+    fragmentsCollected: 0,
+    progress: 'Ready',
+    mergedText: '',
+    fragments: [],
+    error: '',
+    lastRegion: savedLastRegion,
+    stopRequested: false,
+    retryState: null,
+    retryStage: null,
+    pendingText: ''
+  });
+  broadcastState(tabId);
 }
 
 async function copyToClipboard(text) {
@@ -582,11 +633,11 @@ async function copyToClipboard(text) {
   chrome.runtime.sendMessage({ type: 'offscreen:copy', text }).catch(() => {});
 }
 
-function updateState(partial) {
-  Object.assign(state, partial);
-  broadcastState();
+function updateState(tabId, partial) {
+  Object.assign(getState(tabId), partial);
+  broadcastState(tabId);
 }
 
-function broadcastState() {
-  chrome.runtime.sendMessage({ type: 'state:update', state }).catch(() => {});
+function broadcastState(tabId) {
+  chrome.runtime.sendMessage({ type: 'state:update', tabId, state: getState(tabId) }).catch(() => {});
 }

@@ -18,6 +18,7 @@ const autocopyCheckbox = document.getElementById('ocr-autocopy');
 const lastRegionEl = document.getElementById('last-region');
 
 let latestState = null;
+let currentTabId = null;
 
 document.addEventListener('DOMContentLoaded', init);
 startButton.addEventListener('click', startCapture);
@@ -34,11 +35,15 @@ autocopyCheckbox.addEventListener('change', saveSettings);
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'state:update') {
+    if (message.tabId !== currentTabId) return;
     renderState(message.state);
   }
 });
 
 async function init() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  currentTabId = tab?.id || null;
+
   const items = await chrome.storage.sync.get({
     ocrHost: 'localhost',
     ocrPort: 8000,
@@ -86,6 +91,7 @@ async function saveSettings() {
 async function refreshState() {
   const response = await chrome.runtime.sendMessage({ type: 'popup:get-state' });
   if (response?.ok) {
+    currentTabId = response.tabId || currentTabId;
     renderState(response.state);
   }
 }
