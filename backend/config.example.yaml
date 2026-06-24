@@ -14,10 +14,12 @@ ai:
   # Anthropic-compatible providers must expose /v1/messages.
   api_base: "https://api.openai.com"
 
-  # Name of the environment variable that contains the API key.
+  # API key for the provider. Plaintext values are used directly.
+  # Prefix with ``$`` to treat the value as an environment variable name
+  # (e.g. ``$OCR_API_KEY`` resolves ``os.getenv("OCR_API_KEY")``).
   # The backend also falls back to OCR_API_KEY and provider-specific defaults.
-  # Examples: OCR_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY.
-  api_key: "OCR_API_KEY"
+  # Examples: $OCR_API_KEY, $OPENAI_API_KEY, $ANTHROPIC_API_KEY.
+  api_key: "$OCR_API_KEY"
 
   # Vision-capable model name to use for OCR.
   model: "gpt-4.1-mini"

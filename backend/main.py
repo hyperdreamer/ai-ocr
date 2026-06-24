@@ -86,14 +86,32 @@ def _load_yaml_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
 
 
 def _read_api_key(ai_section: dict[str, Any], provider: str) -> str:
-    """Resolve an API key from environment variables named in config.yaml."""
+    """Resolve an API key from config.yaml — plaintext or environment variable.
 
-    candidates: list[str] = []
-    configured_name = ai_section.get("api_key_env") or ai_section.get("api_key")
-    if isinstance(configured_name, str) and configured_name:
-        candidates.append(configured_name.lstrip("$"))
+    By default ``api_key`` is treated as a plaintext value and returned as-is.
+    Prefix the value with ``$`` to treat it as an environment variable name
+    (e.g. ``$OCR_API_KEY`` resolves ``os.getenv("OCR_API_KEY")``).
 
-    candidates.append("OCR_API_KEY")
+    When neither ``api_key`` nor ``api_key_env`` is configured, the function
+    falls back to ``OCR_API_KEY`` and provider-specific environment variables.
+    """
+
+    raw = ai_section.get("api_key_env") or ai_section.get("api_key")
+    if isinstance(raw, str) and raw:
+        # Explicit $ prefix → resolve as environment variable
+        if raw.startswith("$"):
+            env_name = raw.lstrip("$")
+            api_key = os.getenv(env_name)
+            if api_key:
+                return api_key
+            raise RuntimeError(
+                f"API key not found in environment variable: {env_name}"
+            )
+        # Plaintext key — use the value directly
+        return raw
+
+    # Neither api_key nor api_key_env configured → fall back to env vars
+    candidates = ["OCR_API_KEY"]
     if provider == "openai":
         candidates.append("OPENAI_API_KEY")
     elif provider == "anthropic":
@@ -203,14 +221,14 @@ async def _post_openai_chat_completion(config: AIConfig, messages: list[dict[str
     headers = {"Authorization": f"Bearer {config.api_key}"}
 
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
             response = await client.post(
                 f"{config.api_base}/v1/chat/completions",
                 headers=headers,
                 json=request_body,
             )
     except httpx.RequestError as exc:
-        raise HTTPException(status_code=502, detail=f"OpenAI API request failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"OpenAI API request failed: {type(exc).__name__}: {exc}") from exc
 
     if response.is_error:
         raise HTTPException(status_code=502, detail=f"OpenAI API failed: {response.text}")
