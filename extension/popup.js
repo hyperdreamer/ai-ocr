@@ -74,6 +74,7 @@ translatePrompt.addEventListener('input', saveTlState);
 tl2Translate.addEventListener('click', doTranslation);
 tl2Copy.addEventListener('click', () => copyResult(tl2Result, tl2Copy));
 tl2Download.addEventListener('click', () => downloadAsFile(tl2Result.value.trim(), 'translate'));
+tl2Language.addEventListener('change', saveTl2Language);
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'state:update') {
@@ -83,6 +84,7 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'translation:update') {
     if (message.tabId !== currentTabId) return;
     tl2Result.value = message.text || '';
+    chrome.storage.local.set({ tl2Result: message.text || '' });
     tl2Copy.disabled = tl2Download.disabled = !message.text;
     updateTranslationButtons();
   }
@@ -120,6 +122,12 @@ async function init() {
   if (tl.tlLanguage) tlLanguage.value = tl.tlLanguage;
   await loadPromptForLanguage();
 
+  // Load Translation tab language and last result
+  const tl2 = await chrome.storage.local.get(['tl2Language', 'tl2Result']);
+  if (tl2.tl2Language) tl2Language.value = tl2.tl2Language;
+  if (tl2.tl2Result) { tl2Result.value = tl2.tl2Result; tl2Copy.disabled = tl2Download.disabled = false; }
+  updateTranslationButtons();
+
   chrome.storage.local.get('lastRegion', (r) => {
     lastRegionEl.textContent = r.lastRegion
       ? `Last region: ${r.lastRegion.width}x${r.lastRegion.height}px`
@@ -141,6 +149,10 @@ async function saveTlState() {
     tlLanguage: lang,
     [`translatePrompt:${lang}`]: translatePrompt.value
   });
+}
+
+async function saveTl2Language() {
+  await chrome.storage.local.set({ tl2Language: tl2Language.value });
 }
 
 async function onTlLanguageChange() {
@@ -264,6 +276,8 @@ async function doTranslation() {
     const payload = await response.json();
     if (payload.error) throw new Error(payload.error);
     tl2Result.value = payload.text || '';
+    // Save translated result to storage
+    chrome.storage.local.set({ [`translatedResult:${currentTabId}`]: payload.text || '' });
     tl2Copy.disabled = tl2Download.disabled = false;
     tl2Progress.textContent = 'Translation complete.';
     updateTranslationButtons();
