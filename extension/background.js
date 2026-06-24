@@ -1,3 +1,4 @@
+
 const DEFAULT_HOST = 'localhost';
 const DEFAULT_PORT = 8000;
 const OVERLAP_PX = 50;
@@ -19,72 +20,86 @@ const state = {
   error: ''
 };
 
+// ── keyboard shortcut ──────────────────────────────────────────
+
 chrome.commands.onCommand.addListener(async (command) => {
-  if (command !== 'start-region-capture') {
-    return;
+  if (command !== 'start-region-capture') return;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) {
+      updateState({ status: 'Error', error: 'No active tab found.' });
+      return;
+    }
+    await ensureContentScript(tab.id);
+    resetState();
+    updateState({ active: true, status: 'Selecting', progress: 'Drag a rectangle.' });
+    await chrome.tabs.sendMessage(tab.id, { type: 'selection:start' });
+  } catch (e) {
+    console.error('Command handler failed:', e);
+    updateState({ active: false, status: 'Error', error: e.message, progress: 'Failed.' });
   }
-
-  const tab = await getActiveTab();
-  if (!tab?.id) {
-    updateState({ status: 'Error', error: 'No active tab found.' });
-    return;
-  }
-
-  await startRegionSelection(tab.id);
 });
+
+// ── message routing ────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'popup:start') {
-    getActiveTab()
-      .then((tab) => startRegionSelection(tab.id))
-      .then(() => sendResponse({ ok: true }))
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    handlePopupStart().then((r) => sendResponse(r)).catch((e) => sendResponse({ ok: false, error: e.message }));
     return true;
   }
-
   if (message?.type === 'popup:get-state') {
     sendResponse({ ok: true, state });
     return false;
   }
-
   if (message?.type === 'selection:complete') {
     runCaptureLoop(sender.tab, message.region)
       .then(() => sendResponse({ ok: true }))
       .catch((error) => {
-        updateState({ active: false, status: 'Error', error: error.message });
+        console.error('Capture loop failed:', error);
+        updateState({ active: false, status: 'Error', error: error.message, progress: 'Failed.' });
         sendResponse({ ok: false, error: error.message });
       });
     return true;
   }
-
   if (message?.type === 'selection:cancelled') {
     updateState({ active: false, status: 'Cancelled', progress: 'Selection cancelled.' });
-    sendResponse({ ok: true });
     return false;
   }
-
   return false;
 });
 
-async function startRegionSelection(tabId) {
-  if (!tabId) {
-    throw new Error('No active tab found.');
-  }
+// ── popup start ────────────────────────────────────────────────
 
+async function handlePopupStart() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) throw new Error('No active tab found.');
+  await ensureContentScript(tab.id);
   resetState();
-  updateState({
-    active: true,
-    status: 'Selecting',
-    progress: 'Drag a rectangle over the area to OCR.'
-  });
-
-  await sendTabMessage(tabId, { type: 'selection:start' });
+  updateState({ active: true, status: 'Selecting', progress: 'Drag a rectangle.' });
+  await chrome.tabs.sendMessage(tab.id, { type: 'selection:start' });
+  return { ok: true };
 }
 
-async function runCaptureLoop(tab, region) {
-  if (!tab?.id || !tab.windowId) {
-    throw new Error('Missing tab context for capture.');
+// ── ensure content script is loaded ────────────────────────────
+
+async function ensureContentScript(tabId) {
+  // Try injecting — content.js has an IIFE guard so it's safe to call
+  // even if already loaded by the manifest's content_scripts.
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    await chrome.scripting.insertCSS({ target: { tabId }, files: ['overlay.css'] });
+  } catch (e) {
+    // Script already loaded or cannot inject — either way, try messaging next.
+    console.debug('ensureContentScript inject skipped:', e.message);
   }
+}
+
+// ── capture loop ───────────────────────────────────────────────
+
+async function runCaptureLoop(tab, region) {
+  const winId = tab?.windowId;
+  if (!tab?.id) throw new Error('Missing tab id.');
+  if (winId == null || winId < 0) throw new Error('Invalid windowId for capture.');
 
   const normalizedRegion = normalizeRegion(region);
   if (normalizedRegion.width < 2 || normalizedRegion.height < 2) {
@@ -92,11 +107,7 @@ async function runCaptureLoop(tab, region) {
   }
 
   resetState();
-  updateState({
-    active: true,
-    status: 'Capturing',
-    progress: 'Starting capture loop.'
-  });
+  updateState({ active: true, status: 'Capturing', progress: 'Starting capture loop.' });
 
   const fragments = [];
   let lastScrollY = -1;
@@ -106,13 +117,13 @@ async function runCaptureLoop(tab, region) {
     updateState({
       currentPage: pageNumber,
       fragmentsCollected: fragments.length,
-      progress: `Capturing page ${pageNumber}.`
+      progress: `Capturing page ${pageNumber}...`
     });
 
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    const dataUrl = await chrome.tabs.captureVisibleTab(winId, { format: 'png' });
     const croppedBlob = await cropVisibleCapture(dataUrl, normalizedRegion);
 
-    updateState({ progress: `Sending page ${pageNumber} to OCR.` });
+    updateState({ progress: `Sending page ${pageNumber} to OCR...` });
     const text = await postImageForOcr(croppedBlob, pageNumber);
     fragments.push(text);
 
@@ -125,19 +136,15 @@ async function runCaptureLoop(tab, region) {
 
     await sleep(AFTER_SEND_DELAY_MS);
 
-    const scrollResult = await sendTabMessage(tab.id, {
+    const scrollResult = await chrome.tabs.sendMessage(tab.id, {
       type: 'page:scroll-down',
       overlapPx: OVERLAP_PX
     });
 
-    if (!scrollResult?.changed || scrollResult.scrollY === lastScrollY) {
-      break;
-    }
-
+    if (!scrollResult?.changed || scrollResult.scrollY === lastScrollY) break;
     lastScrollY = scrollResult.scrollY;
   }
 
-  const mergedText = mergeFragments(fragments);
   updateState({
     active: false,
     status: 'Done',
@@ -145,9 +152,11 @@ async function runCaptureLoop(tab, region) {
     fragmentsCollected: fragments.length,
     progress: 'Finished.',
     fragments,
-    mergedText
+    mergedText: mergeFragments(fragments)
   });
 }
+
+// ── crop ───────────────────────────────────────────────────────
 
 async function cropVisibleCapture(dataUrl, region) {
   const imageBitmap = await createImageBitmap(await dataUrlToBlob(dataUrl));
@@ -159,166 +168,116 @@ async function cropVisibleCapture(dataUrl, region) {
   const cropHeight = Math.min(imageBitmap.height - cropY, Math.round(region.height * scaleY));
 
   if (cropWidth <= 0 || cropHeight <= 0) {
-    throw new Error('Selected crop is outside the captured viewport.');
+    throw new Error('Crop region outside viewport.');
   }
 
   const canvas = new OffscreenCanvas(cropWidth, cropHeight);
-  const context = canvas.getContext('2d');
-  context.drawImage(imageBitmap, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(imageBitmap, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
   imageBitmap.close();
-
   return canvas.convertToBlob({ type: 'image/png' });
 }
 
+// ── OCR call ───────────────────────────────────────────────────
+
 async function postImageForOcr(blob, pageNumber) {
   const formData = new FormData();
-  formData.append('image', blob, `qidian-page-${String(pageNumber).padStart(4, '0')}.png`);
+  formData.append('image', blob, `page-${String(pageNumber).padStart(4, '0')}.png`);
 
-  const response = await fetch(await getOcrEndpoint(), {
-    method: 'POST',
-    body: formData
-  });
+  const url = await getOcrEndpoint();
+  const response = await fetch(url, { method: 'POST', body: formData });
 
   if (!response.ok) {
-    throw new Error(`OCR request failed with HTTP ${response.status}.`);
+    throw new Error(`OCR HTTP ${response.status}: ${await response.text().catch(() => '')}`);
   }
 
-  const contentType = response.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) {
+  const ct = response.headers.get('content-type') || '';
+  if (ct.includes('application/json')) {
     const payload = await response.json();
-    return String(payload.text ?? payload.result ?? payload.content ?? '').trim();
+    const t = payload.text ?? payload.result ?? payload.content ?? '';
+    if (payload.error) throw new Error(`OCR backend error: ${payload.error}`);
+    return String(t).trim();
   }
-
   return (await response.text()).trim();
 }
 
+// ── merge logic ────────────────────────────────────────────────
+
 function mergeFragments(fragments) {
-  return fragments.reduce((merged, fragment) => {
-    const cleanFragment = normalizeText(fragment);
-    if (!merged) {
-      return cleanFragment;
-    }
-    return mergeTwoFragments(merged, cleanFragment);
+  return fragments.reduce((merged, f) => {
+    const clean = normalizeText(f);
+    return merged ? mergeTwoFragments(merged, clean) : clean;
   }, '');
 }
 
-function mergeTwoFragments(previous, next) {
-  if (!next) {
-    return previous;
-  }
-
-  const previousLines = splitLines(previous);
-  const nextLines = splitLines(next);
-  const overlap = findLineOverlap(previousLines, nextLines);
-  return previousLines.concat(nextLines.slice(overlap)).join('\n').trim();
+function mergeTwoFragments(prev, next) {
+  if (!next) return prev;
+  const pLines = splitLines(prev);
+  const nLines = splitLines(next);
+  const overlap = findLineOverlap(pLines, nLines);
+  return pLines.concat(nLines.slice(overlap)).join('\n').trim();
 }
 
-function findLineOverlap(previousLines, nextLines) {
-  const maxOverlap = Math.min(previousLines.length, nextLines.length);
-
-  for (let length = maxOverlap; length > 0; length -= 1) {
-    const previousSuffix = previousLines.slice(previousLines.length - length).map(normalizeLine);
-    const nextPrefix = nextLines.slice(0, length).map(normalizeLine);
-    if (previousSuffix.every((line, index) => line === nextPrefix[index])) {
-      return length;
-    }
+function findLineOverlap(pLines, nLines) {
+  const max = Math.min(pLines.length, nLines.length);
+  for (let len = max; len > 0; len--) {
+    const suffix = pLines.slice(-len).map(normalizeLine);
+    const prefix = nLines.slice(0, len).map(normalizeLine);
+    if (suffix.every((l, i) => l === prefix[i])) return len;
   }
-
-  return findLcsPrefixOverlap(previousLines, nextLines);
+  return findLcsPrefixOverlap(pLines, nLines);
 }
 
-function findLcsPrefixOverlap(previousLines, nextLines) {
-  const previousTail = previousLines.slice(-20).map(normalizeLine);
-  const nextHead = nextLines.slice(0, 20).map(normalizeLine);
+function findLcsPrefixOverlap(pLines, nLines) {
+  const tail = pLines.slice(-20).map(normalizeLine);
+  const head = nLines.slice(0, 20).map(normalizeLine);
   let best = 0;
-
-  for (let start = 0; start < previousTail.length; start += 1) {
-    let matched = 0;
-    for (let i = start, j = 0; i < previousTail.length && j < nextHead.length; i += 1, j += 1) {
-      if (previousTail[i] === nextHead[j]) {
-        matched += 1;
-      }
+  for (let s = 0; s < tail.length; s++) {
+    let m = 0;
+    for (let i = s, j = 0; i < tail.length && j < head.length; i++, j++) {
+      if (tail[i] === head[j]) m++;
     }
-    if (matched >= 2 && matched > best) {
-      best = matched;
-    }
+    if (m >= 2 && m > best) best = m;
   }
-
   return best;
 }
 
-function normalizeText(text) {
-  return String(text || '')
-    .replace(/\r\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+function normalizeText(t) {
+  return String(t || '').replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-function splitLines(text) {
-  return normalizeText(text)
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
+function splitLines(t) {
+  return normalizeText(t).split('\n').map((l) => l.trim()).filter(Boolean);
 }
 
-function normalizeLine(line) {
-  return line.replace(/\s+/g, ' ').trim();
+function normalizeLine(l) {
+  return l.replace(/\s+/g, ' ').trim();
 }
 
-function normalizeRegion(region) {
+// ── helpers ────────────────────────────────────────────────────
+
+function normalizeRegion(r) {
   return {
-    x: Math.max(0, Number(region.x) || 0),
-    y: Math.max(0, Number(region.y) || 0),
-    width: Math.max(0, Number(region.width) || 0),
-    height: Math.max(0, Number(region.height) || 0),
-    viewportWidth: Math.max(1, Number(region.viewportWidth) || 1),
-    viewportHeight: Math.max(1, Number(region.viewportHeight) || 1)
+    x: Math.max(0, +r.x || 0),
+    y: Math.max(0, +r.y || 0),
+    width: Math.max(0, +r.width || 0),
+    height: Math.max(0, +r.height || 0),
+    viewportWidth: Math.max(1, +r.viewportWidth || 1),
+    viewportHeight: Math.max(1, +r.viewportHeight || 1)
   };
 }
 
-async function getActiveTab() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tab;
-}
-
-async function sendTabMessage(tabId, message) {
-  try {
-    return await chrome.tabs.sendMessage(tabId, message);
-  } catch (error) {
-    if (message.type === 'selection:start') {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ['content.js']
-      });
-      await chrome.scripting.insertCSS({
-        target: { tabId },
-        files: ['overlay.css']
-      });
-      return chrome.tabs.sendMessage(tabId, message);
-    }
-    throw error;
-  }
-}
-
 async function dataUrlToBlob(dataUrl) {
-  return fetch(dataUrl).then((response) => response.blob());
+  return fetch(dataUrl).then((r) => r.blob());
 }
 
-function sleep(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 function resetState() {
-  Object.assign(state, {
-    active: false,
-    status: 'Idle',
-    currentPage: 0,
-    fragmentsCollected: 0,
-    progress: 'Ready',
-    mergedText: '',
-    fragments: [],
-    error: ''
-  });
+  Object.assign(state, { active: false, status: 'Idle', currentPage: 0, fragmentsCollected: 0,
+    progress: 'Ready', mergedText: '', fragments: [], error: '' });
   broadcastState();
 }
 
