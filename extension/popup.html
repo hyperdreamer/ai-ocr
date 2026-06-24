@@ -192,22 +192,10 @@
     <main id="ocr-panel">
       <h1>Qidian OCR Capture</h1>
       <section class="stats" aria-label="Capture status">
-        <div class="stat">
-          <span class="label">Status</span>
-          <span id="status" class="value">Idle</span>
-        </div>
-        <div class="stat">
-          <span class="label">Current page</span>
-          <span id="current-page" class="value">0</span>
-        </div>
-        <div class="stat">
-          <span class="label">Fragments</span>
-          <span id="fragments" class="value">0</span>
-        </div>
-        <div class="stat">
-          <span class="label">Progress</span>
-          <span id="short-progress" class="value">Ready</span>
-        </div>
+        <div class="stat"><span class="label">Status</span><span id="status" class="value">Idle</span></div>
+        <div class="stat"><span class="label">Current page</span><span id="current-page" class="value">0</span></div>
+        <div class="stat"><span class="label">Fragments</span><span id="fragments" class="value">0</span></div>
+        <div class="stat"><span class="label">Progress</span><span id="short-progress" class="value">Ready</span></div>
       </section>
       <div id="progress">Ready</div>
       <div class="settings">
@@ -245,7 +233,20 @@
     <!-- Translate Panel -->
     <main id="translate-panel" class="hidden">
       <h1>Translate</h1>
-      <textarea id="translate-prompt" placeholder="Custom AI prompt (optional). E.g.: Translate to Chinese in a formal style." rows="2"></textarea>
+      <div class="settings">
+        <label>Language
+          <select id="tl-language">
+            <option value="Chinese">Chinese</option>
+            <option value="English">English</option>
+            <option value="Japanese">Japanese</option>
+            <option value="Korean">Korean</option>
+            <option value="French">French</option>
+            <option value="German">German</option>
+            <option value="Spanish">Spanish</option>
+          </select>
+        </label>
+      </div>
+      <textarea id="translate-prompt" placeholder="Custom AI prompt (per language). E.g.: Translate to formal academic Chinese." rows="2"></textarea>
       <textarea id="translate-input" placeholder="Type or paste text to translate..."></textarea>
       <div class="actions">
         <button id="tl-translate" type="button">Translate</button>

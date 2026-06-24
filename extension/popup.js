@@ -19,6 +19,7 @@ const autocopyCheckbox = document.getElementById('ocr-autocopy');
 const lastRegionEl = document.getElementById('last-region');
 
 // ── Translate panel elements ──────────────────────────────────
+const tlLanguage = document.getElementById('tl-language');
 const translatePrompt = document.getElementById('translate-prompt');
 const translateInput = document.getElementById('translate-input');
 const tlTranslateButton = document.getElementById('tl-translate');
@@ -64,8 +65,9 @@ autocopyCheckbox.addEventListener('change', saveSettings);
 tlTranslateButton.addEventListener('click', doTranslate);
 tlCopyButton.addEventListener('click', copyTlResult);
 tlDownloadButton.addEventListener('click', downloadTlResult);
-translateInput.addEventListener('input', saveTranslateInput);
-translatePrompt.addEventListener('input', saveTranslateInput);
+translateInput.addEventListener('input', saveTlState);
+translatePrompt.addEventListener('input', saveTlState);
+tlLanguage.addEventListener('change', onTlLanguageChange);
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'state:update') {
@@ -80,11 +82,8 @@ async function init() {
   currentTabId = tab?.id || null;
 
   const items = await chrome.storage.sync.get({
-    ocrHost: 'localhost',
-    ocrPort: 8000,
-    ocrLanguage: 'original',
-    ocrAutoscroll: true,
-    ocrAutoCopy: true
+    ocrHost: 'localhost', ocrPort: 8000, ocrLanguage: 'original',
+    ocrAutoscroll: true, ocrAutoCopy: true
   });
   hostInput.value = items.ocrHost;
   portInput.value = items.ocrPort;
@@ -92,30 +91,53 @@ async function init() {
   autoscrollCheckbox.checked = items.ocrAutoscroll;
   autocopyCheckbox.checked = items.ocrAutoCopy;
 
-  // Load OCR result for this tab
   const resultKey = currentTabId ? `lastResult:${currentTabId}` : null;
   const stored = resultKey ? await chrome.storage.local.get(resultKey) : {};
   if (resultKey && stored[resultKey]) resultEl.value = stored[resultKey];
-
   await refreshState();
-
   if (!resultEl.value && resultKey) {
     const fb = await chrome.storage.local.get(resultKey);
     if (fb[resultKey]) resultEl.value = fb[resultKey];
   }
 
-  // Load translate input and prompt
-  const tl = await chrome.storage.local.get(['translateInput', 'translatePrompt']);
+  // Load translate tab state
+  const tl = await chrome.storage.local.get(['tlLanguage', 'translateInput']);
+  if (tl.tlLanguage) tlLanguage.value = tl.tlLanguage;
   if (tl.translateInput) translateInput.value = tl.translateInput;
-  if (tl.translatePrompt) translatePrompt.value = tl.translatePrompt;
+  await loadPromptForLanguage();
 
   chrome.storage.local.get('lastRegion', (r) => {
-    if (r.lastRegion) {
-      lastRegionEl.textContent = `Last region: ${r.lastRegion.width}x${r.lastRegion.height}px`;
-    } else {
-      lastRegionEl.textContent = 'No saved region';
-    }
+    lastRegionEl.textContent = r.lastRegion
+      ? `Last region: ${r.lastRegion.width}x${r.lastRegion.height}px`
+      : 'No saved region';
   });
+}
+
+// ── Per-language prompt persistence ───────────────────────────
+async function loadPromptForLanguage() {
+  const lang = tlLanguage.value;
+  const key = `translatePrompt:${lang}`;
+  const result = await chrome.storage.local.get(key);
+  translatePrompt.value = result[key] || '';
+}
+
+async function saveTlState() {
+  const lang = tlLanguage.value;
+  await chrome.storage.local.set({
+    tlLanguage: lang,
+    translateInput: translateInput.value,
+    [`translatePrompt:${lang}`]: translatePrompt.value
+  });
+}
+
+async function onTlLanguageChange() {
+  // Save current prompt for old language, then load new language's prompt
+  const oldLang = (await chrome.storage.local.get('tlLanguage')).tlLanguage;
+  if (oldLang) {
+    await chrome.storage.local.set({ [`translatePrompt:${oldLang}`]: translatePrompt.value });
+  }
+  await chrome.storage.local.set({ tlLanguage: tlLanguage.value });
+  await loadPromptForLanguage();
 }
 
 async function saveSettings() {
@@ -125,13 +147,6 @@ async function saveSettings() {
     ocrLanguage: languageSelect.value || 'original',
     ocrAutoscroll: autoscrollCheckbox.checked,
     ocrAutoCopy: autocopyCheckbox.checked
-  });
-}
-
-async function saveTranslateInput() {
-  await chrome.storage.local.set({
-    translateInput: translateInput.value,
-    translatePrompt: translatePrompt.value
   });
 }
 
@@ -158,32 +173,24 @@ async function translateOcrText() {
   const text = resultEl.value.trim();
   if (!text) return;
   const language = languageSelect.value;
-  if (language === 'original') {
-    progressEl.textContent = 'Select a target language first.';
-    return;
-  }
+  if (language === 'original') { progressEl.textContent = 'Select a target language.'; return; }
   translateButton.disabled = true;
   progressEl.textContent = `Translating to ${language}...`;
   try {
     const host = hostInput.value.trim() || 'localhost';
     const port = parseInt(portInput.value, 10) || 8000;
     const response = await fetch(`http://${host}:${port}/translate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, language })
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     if (payload.error) throw new Error(payload.error);
-    const translated = payload.text || '';
-    resultEl.value = translated;
-    latestState.mergedText = translated;
-    if (currentTabId) {
-      await chrome.storage.local.set({ [`lastResult:${currentTabId}`]: translated });
-    }
+    resultEl.value = payload.text || '';
+    latestState.mergedText = payload.text || '';
+    if (currentTabId) await chrome.storage.local.set({ [`lastResult:${currentTabId}`]: payload.text || '' });
     progressEl.textContent = 'Translation complete.';
-    copyButton.disabled = false;
-    downloadButton.disabled = false;
+    copyButton.disabled = downloadButton.disabled = false;
   } catch (e) {
     progressEl.textContent = `Translation failed: ${e.message}`;
   } finally {
@@ -191,26 +198,18 @@ async function translateOcrText() {
   }
 }
 
-async function stopCapture() {
-  stopButton.disabled = true;
-  await chrome.runtime.sendMessage({ type: 'popup:stop' });
-}
-
+async function stopCapture() { stopButton.disabled = true; await chrome.runtime.sendMessage({ type: 'popup:stop' }); }
 async function retryCapture() {
   retryButton.disabled = true;
   progressEl.textContent = 'Retrying...';
-  const response = await chrome.runtime.sendMessage({ type: 'popup:retry' });
-  if (!response?.ok) {
-    progressEl.textContent = response?.error || 'Retry failed.';
-    retryButton.disabled = false;
-  }
+  const r = await chrome.runtime.sendMessage({ type: 'popup:retry' });
+  if (!r?.ok) { progressEl.textContent = r?.error || 'Retry failed.'; retryButton.disabled = false; }
 }
 
 function renderState(state) {
   latestState = state || {};
   const mergedText = latestState.mergedText || '';
   const hasText = (mergedText || resultEl.value || '').trim().length > 0;
-  const savedRegion = latestState.lastRegion;
   const isActive = Boolean(latestState.active);
   const isError = latestState.status === 'Error';
   const canRetry = (isError && latestState.active && latestState.retryState) || !!latestState.retryStage;
@@ -223,58 +222,42 @@ function renderState(state) {
   if (mergedText) resultEl.value = mergedText;
 
   startButton.disabled = isActive;
-  translateButton.disabled = isActive || languageSelect.value === 'original';
+  translateButton.disabled = !hasText || isActive || languageSelect.value === 'original';
   stopButton.classList.toggle('hidden', !isActive);
   retryButton.classList.toggle('hidden', !canRetry);
-  copyButton.disabled = false;
-  downloadButton.disabled = false;
+  copyButton.disabled = !hasText;
+  downloadButton.disabled = !hasText;
 
-  if (savedRegion) {
-    lastRegionEl.textContent = `Last region: ${savedRegion.width}x${savedRegion.height}px`;
-  }
+  const sr = latestState.lastRegion;
+  if (sr) lastRegionEl.textContent = `Last region: ${sr.width}x${sr.height}px`;
 }
 
 async function copyOcrText() {
-  const text = resultEl.value.trim();
-  if (!text) return;
-  try {
-    await navigator.clipboard.writeText(text);
-    const prev = copyButton.textContent;
-    copyButton.textContent = 'Copied!';
-    setTimeout(() => { copyButton.textContent = prev; }, 1500);
-  } catch {
-    resultEl.select();
-    document.execCommand('copy');
-  }
+  const t = resultEl.value.trim(); if (!t) return;
+  try { await navigator.clipboard.writeText(t); copyButton.textContent = 'Copied!'; setTimeout(() => copyButton.textContent = 'Copy', 1500); }
+  catch { resultEl.select(); document.execCommand('copy'); }
 }
-
-function downloadOcrText() {
-  const text = resultEl.value.trim();
-  if (!text) return;
-  downloadAsFile(text, 'qidian-ocr');
-}
+function downloadOcrText() { downloadAsFile(resultEl.value.trim(), 'qidian-ocr'); }
 
 // ── Translate panel actions ───────────────────────────────────
 async function doTranslate() {
   const text = translateInput.value.trim();
   if (!text) return;
-  const language = languageSelect.value;
-  if (language === 'original') return;
+  const language = tlLanguage.value;
   tlTranslateButton.disabled = true;
   try {
     const host = hostInput.value.trim() || 'localhost';
     const port = parseInt(portInput.value, 10) || 8000;
+    const prompt = translatePrompt.value.trim() || undefined;
     const response = await fetch(`http://${host}:${port}/translate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, language, prompt: translatePrompt.value.trim() || undefined })
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, language, prompt })
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     if (payload.error) throw new Error(payload.error);
     translateResult.value = payload.text || '';
-    tlCopyButton.disabled = false;
-    tlDownloadButton.disabled = false;
+    tlCopyButton.disabled = tlDownloadButton.disabled = false;
   } catch (e) {
     translateResult.value = `Error: ${e.message}`;
   } finally {
@@ -283,34 +266,17 @@ async function doTranslate() {
 }
 
 async function copyTlResult() {
-  const text = translateResult.value.trim();
-  if (!text) return;
-  try {
-    await navigator.clipboard.writeText(text);
-    const prev = tlCopyButton.textContent;
-    tlCopyButton.textContent = 'Copied!';
-    setTimeout(() => { tlCopyButton.textContent = prev; }, 1500);
-  } catch {
-    translateResult.select();
-    document.execCommand('copy');
-  }
+  const t = translateResult.value.trim(); if (!t) return;
+  try { await navigator.clipboard.writeText(t); tlCopyButton.textContent = 'Copied!'; setTimeout(() => tlCopyButton.textContent = 'Copy', 1500); }
+  catch { translateResult.select(); document.execCommand('copy'); }
 }
-
-function downloadTlResult() {
-  const text = translateResult.value.trim();
-  if (!text) return;
-  downloadAsFile(text, 'translate');
-}
+function downloadTlResult() { downloadAsFile(translateResult.value.trim(), 'translate'); }
 
 function downloadAsFile(text, prefix) {
+  if (!text) return;
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  chrome.downloads.download({
-    url,
-    filename: `${prefix}-${timestamp}.txt`,
-    saveAs: true
-  }, () => {
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
-  });
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  chrome.downloads.download({ url, filename: `${prefix}-${ts}.txt`, saveAs: true },
+    () => setTimeout(() => URL.revokeObjectURL(url), 30000));
 }
