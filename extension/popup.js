@@ -84,7 +84,7 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'translation:update') {
     if (message.tabId !== currentTabId) return;
     tl2Result.value = message.text || '';
-    chrome.storage.local.set({ tl2Result: message.text || '' });
+    chrome.storage.local.set({ [`tl2Result:${currentTabId}`]: message.text || '' });
     tl2Copy.disabled = tl2Download.disabled = !message.text;
     updateTranslationButtons();
   }
@@ -122,11 +122,14 @@ async function init() {
   if (tl.tlLanguage) tlLanguage.value = tl.tlLanguage;
   await loadPromptForLanguage();
 
-  // Load Translation tab language and last result
-  const tl2 = await chrome.storage.local.get(['tl2Language', 'tl2Result', 'tl2Progress']);
-  if (tl2.tl2Language) tl2Language.value = tl2.tl2Language;
-  if (tl2.tl2Result) { tl2Result.value = tl2.tl2Result; tl2Copy.disabled = tl2Download.disabled = false; }
-  if (tl2.tl2Progress) tl2Progress.textContent = tl2.tl2Progress;
+  // Load Translation tab language and last result (per-tab)
+  const tl2k = (k) => currentTabId ? `${k}:${currentTabId}` : k;
+  const tl2 = currentTabId ? await chrome.storage.local.get([
+    `tl2Language:${currentTabId}`, `tl2Result:${currentTabId}`, `tl2Progress:${currentTabId}`
+  ]) : {};
+  if (tl2[tl2k('tl2Language')]) tl2Language.value = tl2[tl2k('tl2Language')];
+  if (tl2[tl2k('tl2Result')]) { tl2Result.value = tl2[tl2k('tl2Result')]; tl2Copy.disabled = tl2Download.disabled = false; }
+  if (tl2[tl2k('tl2Progress')]) tl2Progress.textContent = tl2[tl2k('tl2Progress')];
   updateTranslationButtons();
 
   chrome.storage.local.get('lastRegion', (r) => {
@@ -153,7 +156,8 @@ async function saveTlState() {
 }
 
 async function saveTl2Language() {
-  await chrome.storage.local.set({ tl2Language: tl2Language.value });
+  if (!currentTabId) return;
+  await chrome.storage.local.set({ [`tl2Language:${currentTabId}`]: tl2Language.value });
 }
 
 async function onTlLanguageChange() {
@@ -277,8 +281,8 @@ async function doTranslation() {
     const payload = await response.json();
     if (payload.error) throw new Error(payload.error);
     tl2Result.value = payload.text || '';
-    // Save translated result to storage
-    chrome.storage.local.set({ [`translatedResult:${currentTabId}`]: payload.text || '' });
+    // Save translated result to storage (per-tab)
+    chrome.storage.local.set({ [`tl2Result:${currentTabId}`]: payload.text || '' });
     tl2Copy.disabled = tl2Download.disabled = false;
     setTl2Progress('Translation complete.');
     updateTranslationButtons();
@@ -312,7 +316,7 @@ function copyResult(textarea, button) {
 
 function setTl2Progress(text) {
   tl2Progress.textContent = text;
-  chrome.storage.local.set({ tl2Progress: text });
+  if (currentTabId) chrome.storage.local.set({ [`tl2Progress:${currentTabId}`]: text });
 }
 
 function updateTranslationButtons() {
