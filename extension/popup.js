@@ -19,6 +19,7 @@ const autocopyCheckbox = document.getElementById('ocr-autocopy');
 const lastRegionEl = document.getElementById('last-region');
 
 // ── Translate panel elements ──────────────────────────────────
+const translatePrompt = document.getElementById('translate-prompt');
 const translateInput = document.getElementById('translate-input');
 const tlTranslateButton = document.getElementById('tl-translate');
 const translateResult = document.getElementById('translate-result');
@@ -64,6 +65,7 @@ tlTranslateButton.addEventListener('click', doTranslate);
 tlCopyButton.addEventListener('click', copyTlResult);
 tlDownloadButton.addEventListener('click', downloadTlResult);
 translateInput.addEventListener('input', saveTranslateInput);
+translatePrompt.addEventListener('input', saveTranslateInput);
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'state:update') {
@@ -102,9 +104,10 @@ async function init() {
     if (fb[resultKey]) resultEl.value = fb[resultKey];
   }
 
-  // Load translate input
-  const tl = await chrome.storage.local.get('translateInput');
+  // Load translate input and prompt
+  const tl = await chrome.storage.local.get(['translateInput', 'translatePrompt']);
   if (tl.translateInput) translateInput.value = tl.translateInput;
+  if (tl.translatePrompt) translatePrompt.value = tl.translatePrompt;
 
   chrome.storage.local.get('lastRegion', (r) => {
     if (r.lastRegion) {
@@ -126,7 +129,10 @@ async function saveSettings() {
 }
 
 async function saveTranslateInput() {
-  await chrome.storage.local.set({ translateInput: translateInput.value });
+  await chrome.storage.local.set({
+    translateInput: translateInput.value,
+    translatePrompt: translatePrompt.value
+  });
 }
 
 // ── OCR actions ───────────────────────────────────────────────
@@ -217,11 +223,11 @@ function renderState(state) {
   if (mergedText) resultEl.value = mergedText;
 
   startButton.disabled = isActive;
-  translateButton.disabled = !hasText || isActive || languageSelect.value === 'original';
+  translateButton.disabled = isActive || languageSelect.value === 'original';
   stopButton.classList.toggle('hidden', !isActive);
   retryButton.classList.toggle('hidden', !canRetry);
-  copyButton.disabled = !hasText;
-  downloadButton.disabled = !hasText;
+  copyButton.disabled = false;
+  downloadButton.disabled = false;
 
   if (savedRegion) {
     lastRegionEl.textContent = `Last region: ${savedRegion.width}x${savedRegion.height}px`;
@@ -261,7 +267,7 @@ async function doTranslate() {
     const response = await fetch(`http://${host}:${port}/translate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, language })
+      body: JSON.stringify({ text, language, prompt: translatePrompt.value.trim() || undefined })
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();

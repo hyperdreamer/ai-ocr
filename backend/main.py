@@ -48,6 +48,7 @@ class TranslateRequest(BaseModel):
 
     text: str
     language: str
+    prompt: str | None = None
 
 
 @dataclass(frozen=True)
@@ -348,16 +349,16 @@ async def deduplicate_text(config: AIConfig, text: str) -> OCRResponse:
     raise HTTPException(status_code=400, detail=f"Unsupported AI provider: {config.provider}")
 
 
-async def translate_text(config: AIConfig, text: str, language: str) -> OCRResponse:
+async def translate_text(config: AIConfig, text: str, language: str, prompt: str | None = None) -> OCRResponse:
     """Route a translation request to the configured provider."""
 
-    prompt = f"Translate the following text to {language}. Return only the translation."
+    system_prompt = prompt or f"Translate the following text to {language}. Return only the translation."
 
     if config.provider == "openai":
         return await _post_openai_chat_completion(
             config,
             [
-                {"role": "system", "content": prompt},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text},
             ],
         )
@@ -368,7 +369,7 @@ async def translate_text(config: AIConfig, text: str, language: str) -> OCRRespo
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": prompt},
+                        {"type": "text", "text": system_prompt},
                         {"type": "text", "text": text},
                     ],
                 }
@@ -448,7 +449,7 @@ async def translate(request: TranslateRequest) -> OCRResponse:
     if config.ai is None:
         raise HTTPException(status_code=500, detail="AI provider configuration is missing")
 
-    return await translate_text(config.ai, request.text, request.language)
+    return await translate_text(config.ai, request.text, request.language, request.prompt)
 
 
 if __name__ == "__main__":
