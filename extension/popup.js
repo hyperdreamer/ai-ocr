@@ -142,7 +142,19 @@ async function init() {
   ]) : {};
   if (tl2[tl2k('tl2Language')]) tl2Language.value = tl2[tl2k('tl2Language')];
   if (tl2[tl2k('tl2Result')]) { tl2Result.value = tl2[tl2k('tl2Result')]; tl2Copy.disabled = tl2Download.disabled = false; }
-  if (tl2[tl2k('tl2Progress')]) tl2Progress.textContent = tl2[tl2k('tl2Progress')];
+  if (tl2[tl2k('tl2Progress')]) {
+    // Clear stale "Translating..." state from previous session
+    const p = tl2[tl2k('tl2Progress')];
+    if (p === 'Translating...') {
+      tl2Progress.textContent = '';
+    } else {
+      tl2Progress.textContent = p;
+    }
+  }
+  // Always reset button to normal state on open
+  tl2Translate.textContent = 'Translate';
+  tl2Translate.classList.remove('danger');
+  tl2AbortController = null;
   updateTranslationButtons();
 
   chrome.storage.local.get('lastRegion', (r) => {
