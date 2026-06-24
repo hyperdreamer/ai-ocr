@@ -170,7 +170,7 @@ async function retryCapture() {
 function renderState(state) {
   latestState = state || {};
   const mergedText = latestState.mergedText || '';
-  const hasText = mergedText.trim().length > 0;
+  const hasText = (mergedText || resultEl.value || '').trim().length > 0;
   const savedRegion = latestState.lastRegion;
   const isActive = Boolean(latestState.active);
   const isError = latestState.status === 'Error';
@@ -181,7 +181,7 @@ function renderState(state) {
   fragmentsEl.textContent = String(latestState.fragmentsCollected || 0);
   shortProgressEl.textContent = latestState.progress || 'Ready';
   progressEl.textContent = latestState.error || latestState.progress || 'Ready';
-  resultEl.value = mergedText;
+  if (mergedText) resultEl.value = mergedText;
 
   startButton.disabled = isActive;
   translateButton.disabled = !hasText || isActive || languageSelect.value === 'original';
