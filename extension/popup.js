@@ -5,7 +5,7 @@ const shortProgressEl = document.getElementById('short-progress');
 const progressEl = document.getElementById('progress');
 const resultEl = document.getElementById('result');
 const startButton = document.getElementById('start');
-const reuseButton = document.getElementById('reuse');
+const translateButton = document.getElementById('translate-text');
 const stopButton = document.getElementById('stop');
 const retryButton = document.getElementById('retry');
 const copyButton = document.getElementById('copy');
@@ -19,7 +19,7 @@ let latestState = null;
 
 document.addEventListener('DOMContentLoaded', init);
 startButton.addEventListener('click', startCapture);
-reuseButton.addEventListener('click', reuseCapture);
+translateButton.addEventListener('click', translateText);
 stopButton.addEventListener('click', stopCapture);
 retryButton.addEventListener('click', retryCapture);
 copyButton.addEventListener('click', copyText);
@@ -43,11 +43,16 @@ async function init() {
   hostInput.value = items.ocrHost;
   portInput.value = items.ocrPort;
   languageSelect.value = items.ocrLanguage;
+
+  // Load stored last result in case background state is empty (race condition on startup)
+  const stored = await chrome.storage.local.get('lastResult');
+  if (stored.lastResult) resultEl.value = stored.lastResult;
+
   await refreshState();
+
   chrome.storage.local.get('lastRegion', (r) => {
     if (r.lastRegion) {
       lastRegionEl.textContent = `Last region: ${r.lastRegion.width}×${r.lastRegion.height}px`;
-      reuseButton.disabled = false;
     } else {
       lastRegionEl.textContent = 'No saved region';
     }
@@ -71,7 +76,6 @@ async function refreshState() {
 
 async function startCapture() {
   startButton.disabled = true;
-  reuseButton.disabled = true;
   progressEl.textContent = 'Starting region selection.';
   const response = await chrome.runtime.sendMessage({ type: 'popup:start' });
   if (!response?.ok) {
@@ -80,15 +84,45 @@ async function startCapture() {
   }
 }
 
-async function reuseCapture() {
-  reuseButton.disabled = true;
-  startButton.disabled = true;
-  progressEl.textContent = 'Reusing last region...';
-  const response = await chrome.runtime.sendMessage({ type: 'popup:start-with-region' });
-  if (!response?.ok) {
-    progressEl.textContent = response?.error || 'No saved region.';
-    reuseButton.disabled = false;
-    startButton.disabled = false;
+async function translateText() {
+  const text = latestState?.mergedText || resultEl.value || '';
+  if (!text.trim()) return;
+
+  const language = languageSelect.value;
+  if (language === 'original') {
+    progressEl.textContent = 'Select a target language first.';
+    return;
+  }
+
+  translateButton.disabled = true;
+  progressEl.textContent = `Translating to ${language}...`;
+
+  try {
+    const host = hostInput.value.trim() || 'localhost';
+    const port = parseInt(portInput.value, 10) || 8000;
+    const response = await fetch(`http://${host}:${port}/translate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, language })
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const payload = await response.json();
+    if (payload.error) throw new Error(payload.error);
+
+    const translated = payload.text || '';
+    resultEl.value = translated;
+    latestState.mergedText = translated;
+    progressEl.textContent = 'Translation complete.';
+    copyButton.disabled = false;
+    downloadButton.disabled = false;
+  } catch (e) {
+    progressEl.textContent = `Translation failed: ${e.message}`;
+  } finally {
+    translateButton.disabled = false;
   }
 }
 
@@ -109,7 +143,7 @@ async function retryCapture() {
 
 function renderState(state) {
   latestState = state || {};
-  const mergedText = latestState.mergedText || '';
+  const mergedText = latestState.mergedText || resultEl.value || '';
   const hasText = mergedText.trim().length > 0;
   const savedRegion = latestState.lastRegion;
   const isActive = Boolean(latestState.active);
@@ -124,7 +158,7 @@ function renderState(state) {
   resultEl.value = mergedText;
 
   startButton.disabled = isActive;
-  reuseButton.disabled = !savedRegion || isActive;
+  translateButton.disabled = !hasText || isActive || languageSelect.value === 'original';
   stopButton.classList.toggle('hidden', !isActive);
   retryButton.classList.toggle('hidden', !canRetry);
   copyButton.disabled = !hasText;
