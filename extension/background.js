@@ -434,6 +434,7 @@ async function autoTranslateIfEnabled(tabId, originalText) {
   });
   if (!ocrAutoTranslate || ocrLanguage === 'original') return;
 
+  chrome.runtime.sendMessage({ type: 'translation:start', tabId }).catch(() => {});
   try {
     const key = `translatePrompt:${ocrLanguage}`;
     const stored = await chrome.storage.local.get(key);
