@@ -18,7 +18,7 @@ function getState(tabId) {
   if (!states.has(tabId)) {
     states.set(tabId, {
       active: false, status: 'Idle', currentPage: 0, fragmentsCollected: 0,
-      progress: 'Ready', mergedText: savedLastResult, fragments: [], error: '',
+      progress: 'Ready', mergedText: '', fragments: [], error: '',
       lastRegion: savedLastRegion, stopRequested: false, retryState: null,
       retryStage: null, pendingText: ''
     });
