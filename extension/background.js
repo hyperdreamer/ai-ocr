@@ -241,6 +241,9 @@ async function handleTranslateStart(msg) {
     chrome.runtime.sendMessage({ type: 'translation:update', tabId, text: payload.text || '' }).catch(() => {});
   } catch (e) {
     chrome.runtime.sendMessage({ type: 'translation:update', tabId, text: '' }).catch(() => {});
+    // Clear translating state so the popup doesn't reopen stuck on "Stop"
+    chrome.storage.local.remove(`tl2Translating:${tabId}`);
+    chrome.runtime.sendMessage({ type: 'tl2:translating', tabId, value: false }).catch(() => {});
   } finally {
     clearTimeout(timeoutId);
     translateControllers.delete(tabId);
@@ -568,32 +571,6 @@ async function postTextForDedup(text) {
 
   const payload = await response.json();
   if (payload.error) throw new Error(`Dedup backend error: ${payload.error}`);
-  return String(payload.text ?? '').trim();
-}
-
-async function translateIfNeeded(tabId, text) {
-  const items = await chrome.storage.sync.get({ ocrLanguage: DEFAULT_LANGUAGE });
-  const language = items.ocrLanguage || DEFAULT_LANGUAGE;
-  if (language === DEFAULT_LANGUAGE) return text;
-
-  updateState(tabId, { progress: `Translating to ${language}...` });
-  return postTextForTranslation(text, language);
-}
-
-async function postTextForTranslation(text, language) {
-  const url = await getBackendEndpoint('/translate');
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, language })
-  });
-
-  if (!response.ok) {
-    throw new Error(`Translate HTTP ${response.status}: ${await response.text().catch(() => '')}`);
-  }
-
-  const payload = await response.json();
-  if (payload.error) throw new Error(`Translate backend error: ${payload.error}`);
   return String(payload.text ?? '').trim();
 }
 

@@ -193,6 +193,11 @@ def _image_to_data_url(image_bytes: bytes, content_type: str | None) -> str:
         inferred_format = (image.format or "").lower()
     except UnidentifiedImageError as exc:
         raise HTTPException(status_code=400, detail="Uploaded file is not a valid image") from exc
+    finally:
+        try:
+            image.close()
+        except NameError:
+            pass
 
     mime_type = content_type if content_type and content_type.startswith("image/") else None
     if not mime_type and inferred_format:
@@ -258,7 +263,7 @@ async def _call_with_retry(
                 status_code=504,
                 detail=f"{provider_name} API did not respond within {deadline}s",
             )
-        except (httpx.RequestError, ValueError) as exc:
+        except (httpx.RequestError) as exc:
             last_exc = HTTPException(
                 status_code=502,
                 detail=f"{provider_name} API request failed: {type(exc).__name__}: {exc}",
@@ -285,12 +290,6 @@ async def _post_openai_chat_completion(config: AIConfig, messages: list[dict[str
     }
     headers = {"Authorization": f"Bearer {config.api_key}"}
 
-    # ── debug ──────────────────────────────────────────────
-    _in_len = sum(len(str(m.get("content", ""))) for m in messages)
-    print(f"[translate] sending to {config.api_base} — {_in_len} chars input",
-          flush=True)
-    # ────────────────────────────────────────────────────────
-
     async def _do_request() -> httpx.Response:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(
@@ -308,29 +307,14 @@ async def _post_openai_chat_completion(config: AIConfig, messages: list[dict[str
 
     response = await _call_with_retry(config, _do_request, "OpenAI")
 
-    # ── debug ──────────────────────────────────────────────
-    print(f"[translate] got response status={response.status_code} "
-          f"content-length={response.headers.get('content-length', '?')}",
-          flush=True)
-    # ────────────────────────────────────────────────────────
-
     if response.is_error:
         detail = response.text
         if len(detail) > 500:
             detail = detail[:500] + "..."
         raise HTTPException(status_code=502, detail=f"OpenAI API failed: {detail}")
 
-    # ── debug ──────────────────────────────────────────────
-    print(f"[translate] parsing JSON response...", flush=True)
-    # ────────────────────────────────────────────────────────
-
     payload = response.json()
-
-    # ── debug ──────────────────────────────────────────────
     _text = _extract_openai_text(payload)
-    print(f"[translate] parsed OK — {len(_text)} chars output", flush=True)
-    # ────────────────────────────────────────────────────────
-
     usage = payload.get("usage") or {}
     return OCRResponse(
         text=_text,
@@ -593,15 +577,8 @@ async def translate(request: TranslateRequest) -> Response:
     import json as _json
 
     result = await translate_text(config.ai, request.text, request.language, request.prompt)
-    # ── debug ──────────────────────────────────────────────
-    print(f"[translate] got result, text len={len(result.text)}", flush=True)
     body = {"text": result.text, "model": result.model, "tokens_used": result.tokens_used}
-    print(f"[translate] serializing JSON — {len(result.text)} chars text", flush=True)
-    body_str = _json.dumps(body, ensure_ascii=False)
-    print(f"[translate] JSON done — {len(body_str)} bytes", flush=True)
-    body_bytes = body_str.encode("utf-8")
-    print(f"[translate] encoded — {len(body_bytes)} bytes, returning", flush=True)
-    # ────────────────────────────────────────────────────────
+    body_bytes = _json.dumps(body, ensure_ascii=False).encode("utf-8")
     return Response(
         content=body_bytes,
         media_type="application/json",
