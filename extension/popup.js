@@ -14,7 +14,6 @@ const hostInput = document.getElementById('ocr-host');
 const portInput = document.getElementById('ocr-port');
 const languageSelect = document.getElementById('ocr-language');
 const autoscrollCheckbox = document.getElementById('ocr-autoscroll');
-const autotranslateCheckbox = document.getElementById('ocr-autotranslate');
 const lastRegionEl = document.getElementById('last-region');
 
 // ── Translate panel elements ──────────────────────────────────
@@ -30,6 +29,7 @@ const tl2Copy = document.getElementById('tl2-copy');
 const tl2Download = document.getElementById('tl2-download');
 const tl2AutocopyCheckbox = document.getElementById('tl2-autocopy');
 const tl2AutosaveCheckbox = document.getElementById('tl2-autosave');
+const tl2AutotranslateCheckbox = document.getElementById('tl2-autotranslate');
 const tl2AutosavePath = document.getElementById('tl2-autosave-path');
 const tl2AutosavePathRow = document.getElementById('tl2-autosave-path-row');
 const tl2PathSuggestions = document.getElementById('tl2-path-suggestions');
@@ -68,7 +68,6 @@ hostInput.addEventListener('change', saveSettings);
 portInput.addEventListener('change', saveSettings);
 languageSelect.addEventListener('change', () => { saveSettings(); syncLanguage('ocr'); });
 autoscrollCheckbox.addEventListener('change', saveSettings);
-autotranslateCheckbox.addEventListener('change', saveSettings);
 
 // ── Translate panel listeners ─────────────────────────────────
 tlLanguage.addEventListener('change', () => { onTlLanguageChange(); syncLanguage('prompt'); });
@@ -84,6 +83,7 @@ tl2AutosaveCheckbox.addEventListener('change', () => {
   tl2AutosavePathRow.classList.toggle('hidden', !tl2AutosaveCheckbox.checked);
   saveTl2Settings();
 });
+tl2AutotranslateCheckbox.addEventListener('change', saveTl2Settings);
 tl2AutosavePath.addEventListener('input', () => {
   saveTl2Settings();
   updatePathSuggestions(tl2AutosavePath.value);
@@ -133,8 +133,7 @@ async function init() {
   const items = await chrome.storage.sync.get({
     ocrHost: 'localhost', ocrPort: 8765,
     ocrLanguage: 'original',
-    ocrAutoscroll: true,
-    ocrAutoTranslate: false
+    ocrAutoscroll: true
   });
   hostInput.value = items.ocrHost;
   portInput.value = items.ocrPort;
@@ -142,7 +141,6 @@ async function init() {
   tlLanguage.value = items.ocrLanguage;
   tl2Language.value = items.ocrLanguage;
   autoscrollCheckbox.checked = items.ocrAutoscroll;
-  autotranslateCheckbox.checked = items.ocrAutoTranslate;
 
   const resultKey = currentTabId ? `lastResult:${currentTabId}` : null;
   if (resultKey) {
@@ -203,12 +201,14 @@ async function init() {
   }
   updateTranslationButtons();
 
-  // Load Translation tab settings (auto-copy, auto-save, auto-save-path)
+  // Load Translation tab settings (auto-copy, auto-save, auto-translate, auto-save-path)
   const tl2Settings = await chrome.storage.sync.get({
-    tl2AutoCopy: false, tl2AutoSave: false, tl2AutoSavePath: ''
+    tl2AutoCopy: false, tl2AutoSave: false,
+    ocrAutoTranslate: false, tl2AutoSavePath: ''
   });
   tl2AutocopyCheckbox.checked = tl2Settings.tl2AutoCopy;
   tl2AutosaveCheckbox.checked = tl2Settings.tl2AutoSave;
+  tl2AutotranslateCheckbox.checked = tl2Settings.ocrAutoTranslate;
   tl2AutosavePath.value = tl2Settings.tl2AutoSavePath || '';
   tl2AutosavePathRow.classList.toggle('hidden', !tl2AutosaveCheckbox.checked);
   loadPathSuggestions();
@@ -270,8 +270,7 @@ async function saveSettings() {
     ocrHost: hostInput.value.trim() || 'localhost',
     ocrPort: parseInt(portInput.value, 10) || 8765,
     ocrLanguage: languageSelect.value || 'original',
-    ocrAutoscroll: autoscrollCheckbox.checked,
-    ocrAutoTranslate: autotranslateCheckbox.checked
+    ocrAutoscroll: autoscrollCheckbox.checked
   });
 }
 
@@ -446,7 +445,8 @@ async function saveTl2Settings() {
   await chrome.storage.sync.set({
     tl2AutoCopy: tl2AutocopyCheckbox.checked,
     tl2AutoSave: tl2AutosaveCheckbox.checked,
-    tl2AutoSavePath: tl2AutosavePath.value.trim()
+    tl2AutoSavePath: tl2AutosavePath.value.trim(),
+    ocrAutoTranslate: tl2AutotranslateCheckbox.checked
   });
 }
 
