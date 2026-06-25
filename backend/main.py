@@ -578,19 +578,25 @@ async def dedup(request: DedupRequest) -> OCRResponse:
     return await deduplicate_text(config.ai, request.text)
 
 
-@app.post("/translate", response_model=OCRResponse)
-async def translate(request: TranslateRequest) -> OCRResponse:
+@app.post("/translate", response_model=None)
+async def translate(request: TranslateRequest) -> JSONResponse:
     """Accept text and return a translation from the configured AI model."""
 
     try:
         config = load_config()
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return JSONResponse(status_code=500, content=_error_payload(str(exc)))
 
     if config.ai is None:
-        raise HTTPException(status_code=500, detail="AI provider configuration is missing")
+        return JSONResponse(status_code=500, content=_error_payload("AI provider configuration is missing"))
 
-    return await translate_text(config.ai, request.text, request.language, request.prompt)
+    result = await translate_text(config.ai, request.text, request.language, request.prompt)
+    # ── debug ──────────────────────────────────────────────
+    print(f"[translate] serializing response — {len(result.text)} chars",
+          flush=True)
+    # ────────────────────────────────────────────────────────
+    body = {"text": result.text, "model": result.model, "tokens_used": result.tokens_used}
+    return JSONResponse(content=body)
 
 
 if __name__ == "__main__":
