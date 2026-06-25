@@ -108,6 +108,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleRetry().then((r) => sendResponse(r)).catch((e) => sendResponse({ ok: false, error: e.message }));
     return true;
   }
+  if (message?.type === 'translate:start') {
+    handleTranslateStart(message).then((r) => sendResponse(r)).catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+  if (message?.type === 'translate:stop') {
+    handleTranslateStop(message.tabId);
+    sendResponse({ ok: true });
+    return false;
+  }
   return false;
 });
 
@@ -183,6 +192,60 @@ async function handleRetry() {
   updateState(tab.id, { active: true, status: 'Capturing', progress: 'Retrying...', error: '' });
   await resumeCaptureLoop(rs);
   return { ok: true };
+}
+
+// ── manual translation (delegated to background so it survives popup close) ─
+
+const translateControllers = new Map();
+
+async function handleTranslateStart(msg) {
+  const { tabId, text, language, host, port } = msg;
+  if (!tabId || !text) return { ok: false, error: 'Missing tabId or text' };
+
+  // Abort any in-flight translation for this tab
+  handleTranslateStop(tabId);
+
+  const controller = new AbortController();
+  translateControllers.set(tabId, controller);
+
+  // Client-side safety timeout
+  const TIMEOUT_MS = 12 * 60 * 1000;
+  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  chrome.runtime.sendMessage({ type: 'tl2:translating', tabId, value: true }).catch(() => {});
+
+  try {
+    const key = `translatePrompt:${language}`;
+    const stored = await chrome.storage.local.get(key);
+    const url = `http://${host || 'localhost'}:${port || 8765}/translate`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, language, prompt: stored[key] || undefined }),
+      signal: controller.signal
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    if (payload.error) throw new Error(payload.error);
+
+    chrome.storage.local.set({ [`tl2Result:${tabId}`]: payload.text || '' });
+    chrome.runtime.sendMessage({ type: 'translation:update', tabId, text: payload.text || '' }).catch(() => {});
+  } catch (e) {
+    chrome.runtime.sendMessage({ type: 'translation:update', tabId, text: '' }).catch(() => {});
+  } finally {
+    clearTimeout(timeoutId);
+    translateControllers.delete(tabId);
+  }
+
+  return { ok: true };
+}
+
+function handleTranslateStop(tabId) {
+  const controller = translateControllers.get(tabId);
+  if (controller) {
+    controller.abort();
+    translateControllers.delete(tabId);
+  }
 }
 
 async function getActiveTab() {

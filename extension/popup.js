@@ -173,14 +173,23 @@ async function init() {
   // Restore translating state from storage (survives popup close/reopen)
   const tl2transKey = currentTabId ? `tl2Translating:${currentTabId}` : null;
   const tl2trans = tl2transKey ? await chrome.storage.local.get(tl2transKey) : {};
-  if (tl2trans[tl2transKey]) {
+  const tl2resKey = currentTabId ? `tl2Result:${currentTabId}` : null;
+  const tl2res = tl2resKey ? await chrome.storage.local.get(tl2resKey) : {};
+
+  if (tl2trans[tl2transKey] && tl2res[tl2resKey]) {
+    // Translation completed while popup was closed — show result
+    tl2Translate.textContent = 'Translate';
+    tl2Translate.classList.remove('danger');
+    tl2Result.value = tl2res[tl2resKey];
+    tl2Copy.disabled = tl2Download.disabled = false;
+    chrome.storage.local.remove(tl2transKey);
+  } else if (tl2trans[tl2transKey]) {
     tl2Translate.textContent = 'Stop';
     tl2Translate.classList.add('danger');
     tl2Copy.disabled = tl2Download.disabled = true;
   } else {
     tl2Translate.textContent = 'Translate';
     tl2Translate.classList.remove('danger');
-    tl2AbortController = null;
   }
   updateTranslationButtons();
 
@@ -338,86 +347,53 @@ function downloadOcrText() {
 let tl2AbortController = null;
 
 async function doTranslation() {
-  // If a live AbortController exists, treat click as Stop
-  if (tl2AbortController) {
-    stopTranslation();
-    return;
-  }
-
-  // Button shows "Stop" but no live controller — stale state from a previous
-  // popup session (tl2AbortController doesn't survive popup close).  Clear
-  // the stale state so the user doesn't need a second click.
+  // Button shows "Stop" — abort the background translation
   if (tl2Translate.textContent === 'Stop') {
-    tl2Translate.textContent = 'Translate';
-    tl2Translate.classList.remove('danger');
-    if (currentTabId) chrome.storage.local.remove(`tl2Translating:${currentTabId}`);
-    setTl2Progress('');
-    updateTranslationButtons();
+    stopTranslation();
     return;
   }
 
   const text = resultEl.value.trim();
   if (!text) return;
   const language = tl2Language.value;
+  const host = hostInput.value.trim() || 'localhost';
+  const port = parseInt(portInput.value, 10) || 8765;
 
-  tl2AbortController = new AbortController();
   tl2Translate.textContent = 'Stop';
   tl2Translate.classList.add('danger');
   if (currentTabId) chrome.storage.local.set({ [`tl2Translating:${currentTabId}`]: true });
   setTl2Progress(`Translating to ${language}...`);
 
-  // Client-side safety timeout (slightly longer than backend's 30 min).
-  // Prevents UI from being stuck on "Translating..." forever if the
-  // backend or network never responds.
-  const CLIENT_TIMEOUT_MS = 12 * 60 * 1000;
-  const timeoutId = setTimeout(() => tl2AbortController.abort(), CLIENT_TIMEOUT_MS);
-
-  try {
-    const host = hostInput.value.trim() || 'localhost';
-    const port = parseInt(portInput.value, 10) || 8765;
-    const key = `translatePrompt:${language}`;
-    const stored = await chrome.storage.local.get(key);
-    const response = await fetch(`http://${host}:${port}/translate`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, language, prompt: stored[key] || undefined }),
-      signal: tl2AbortController.signal
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-    if (payload.error) throw new Error(payload.error);
-    tl2Result.value = payload.text || '';
-    // Save translated result to storage (per-tab)
-    chrome.storage.local.set({ [`tl2Result:${currentTabId}`]: payload.text || '' });
-    tl2Copy.disabled = tl2Download.disabled = false;
-    setTl2Progress('Translation complete.');
-    updateTranslationButtons();
-  } catch (e) {
-    if (e.name === 'AbortError') {
-      setTl2Progress('Translation stopped.');
-    } else {
-      tl2Result.value = `Error: ${e.message}`;
-      setTl2Progress(`Translation failed: ${e.message}`);
-    }
-    updateTranslationButtons();
-  } finally {
-    clearTimeout(timeoutId);
-    tl2AbortController = null;
+  // Delegate the fetch to the background service worker so it survives
+  // popup close.  The popup context is destroyed when the popup closes,
+  // which cancels any in-flight fetch() — this is why the backend
+  // response was never received for long translations.
+  const response = await chrome.runtime.sendMessage({
+    type: 'translate:start',
+    tabId: currentTabId,
+    text,
+    language,
+    host,
+    port
+  });
+  if (!response?.ok) {
+    setTl2Progress(`Translation failed: ${response?.error || 'unknown error'}`);
+    tl2Result.value = `Error: ${response?.error || 'unknown error'}`;
     tl2Translate.textContent = 'Translate';
     tl2Translate.classList.remove('danger');
     if (currentTabId) chrome.storage.local.remove(`tl2Translating:${currentTabId}`);
+    updateTranslationButtons();
   }
 }
 
 function stopTranslation() {
-  if (tl2AbortController) {
-    tl2AbortController.abort();
-    tl2AbortController = null;
-    tl2Translate.textContent = 'Translate';
-    tl2Translate.classList.remove('danger');
-    if (currentTabId) chrome.storage.local.remove(`tl2Translating:${currentTabId}`);
-    updateTranslationButtons();
-    setTl2Progress('Translation stopped.');
-  }
+  if (!currentTabId) return;
+  chrome.runtime.sendMessage({ type: 'translate:stop', tabId: currentTabId }).catch(() => {});
+  tl2Translate.textContent = 'Translate';
+  tl2Translate.classList.remove('danger');
+  if (currentTabId) chrome.storage.local.remove(`tl2Translating:${currentTabId}`);
+  updateTranslationButtons();
+  setTl2Progress('Translation stopped.');
 }
 
 function copyResult(textarea, button) {
