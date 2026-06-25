@@ -369,7 +369,7 @@ async function doTranslation() {
   // Client-side safety timeout (slightly longer than backend's 30 min).
   // Prevents UI from being stuck on "Translating..." forever if the
   // backend or network never responds.
-  const CLIENT_TIMEOUT_MS = 35 * 60 * 1000;
+  const CLIENT_TIMEOUT_MS = 12 * 60 * 1000;
   const timeoutId = setTimeout(() => tl2AbortController.abort(), CLIENT_TIMEOUT_MS);
 
   try {
