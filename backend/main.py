@@ -56,8 +56,8 @@ class TimeoutConfig:
     """Per-phase HTTP timeouts for AI provider calls (all in seconds)."""
 
     connect: float = 10.0
-    read: float = 600.0
-    write: float = 60.0
+    read: float = 1800.0
+    write: float = 120.0
     pool: float = 10.0
 
 
@@ -154,8 +154,8 @@ def load_config() -> AppConfig:
     timeout_section = timeout_raw if isinstance(timeout_raw, dict) else {}
     timeout = TimeoutConfig(
         connect=float(timeout_section.get("connect", 10.0)),
-        read=float(timeout_section.get("read", 600.0)),
-        write=float(timeout_section.get("write", 60.0)),
+        read=float(timeout_section.get("read", 1800.0)),
+        write=float(timeout_section.get("write", 120.0)),
         pool=float(timeout_section.get("pool", 10.0)),
     )
 

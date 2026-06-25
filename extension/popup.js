@@ -365,6 +365,13 @@ async function doTranslation() {
   tl2Translate.classList.add('danger');
   if (currentTabId) chrome.storage.local.set({ [`tl2Translating:${currentTabId}`]: true });
   setTl2Progress(`Translating to ${language}...`);
+
+  // Client-side safety timeout (slightly longer than backend's 30 min).
+  // Prevents UI from being stuck on "Translating..." forever if the
+  // backend or network never responds.
+  const CLIENT_TIMEOUT_MS = 35 * 60 * 1000;
+  const timeoutId = setTimeout(() => tl2AbortController.abort(), CLIENT_TIMEOUT_MS);
+
   try {
     const host = hostInput.value.trim() || 'localhost';
     const port = parseInt(portInput.value, 10) || 8765;
@@ -393,6 +400,7 @@ async function doTranslation() {
     }
     updateTranslationButtons();
   } finally {
+    clearTimeout(timeoutId);
     tl2AbortController = null;
     tl2Translate.textContent = 'Translate';
     tl2Translate.classList.remove('danger');
