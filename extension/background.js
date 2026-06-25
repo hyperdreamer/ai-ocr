@@ -212,6 +212,11 @@ async function handleTranslateStart(msg) {
   const TIMEOUT_MS = 12 * 60 * 1000;
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
+  // Persist state so popup reopen shows "Stop" button
+  await chrome.storage.local.set({
+    [`tl2Translating:${tabId}`]: true,
+    [`tl2Progress:${tabId}`]: `Translating to ${language}...`
+  });
   chrome.runtime.sendMessage({ type: 'tl2:translating', tabId, value: true }).catch(() => {});
 
   try {
@@ -235,6 +240,7 @@ async function handleTranslateStart(msg) {
   } finally {
     clearTimeout(timeoutId);
     translateControllers.delete(tabId);
+    chrome.storage.local.remove(`tl2Translating:${tabId}`);
   }
 
   return { ok: true };
@@ -245,6 +251,7 @@ function handleTranslateStop(tabId) {
   if (controller) {
     controller.abort();
     translateControllers.delete(tabId);
+    chrome.storage.local.remove(`tl2Translating:${tabId}`);
   }
 }
 
