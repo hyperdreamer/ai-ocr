@@ -12,7 +12,6 @@ const copyButton = document.getElementById('copy');
 const downloadButton = document.getElementById('download');
 const hostInput = document.getElementById('ocr-host');
 const portInput = document.getElementById('ocr-port');
-const languageSelect = document.getElementById('ocr-language');
 const autoscrollCheckbox = document.getElementById('ocr-autoscroll');
 const lastRegionEl = document.getElementById('last-region');
 
@@ -66,7 +65,6 @@ downloadButton.addEventListener('click', downloadOcrText);
 resultEl.addEventListener('input', saveOcrText);
 hostInput.addEventListener('change', saveSettings);
 portInput.addEventListener('change', saveSettings);
-languageSelect.addEventListener('change', () => { saveSettings(); syncLanguage('ocr'); });
 autoscrollCheckbox.addEventListener('change', saveSettings);
 
 // ── Translate panel listeners ─────────────────────────────────
@@ -132,14 +130,12 @@ async function init() {
 
   const items = await chrome.storage.sync.get({
     ocrHost: 'localhost', ocrPort: 8765,
-    ocrLanguage: 'original',
     ocrAutoscroll: true
   });
   hostInput.value = items.ocrHost;
   portInput.value = items.ocrPort;
-  languageSelect.value = items.ocrLanguage;
-  tlLanguage.value = items.ocrLanguage;
-  tl2Language.value = items.ocrLanguage;
+  tlLanguage.value = tlLanguage.value || 'original';
+  tl2Language.value = tl2Language.value || 'original';
   autoscrollCheckbox.checked = items.ocrAutoscroll;
 
   const resultKey = currentTabId ? `lastResult:${currentTabId}` : null;
@@ -243,16 +239,13 @@ async function saveTl2Language() {
 
 function syncLanguage(source) {
   const lang = {
-    ocr: languageSelect,
     prompt: tlLanguage,
     translation: tl2Language
   }[source];
   if (!lang) return;
   const value = lang.value;
-  if (source !== 'ocr') languageSelect.value = value;
   if (source !== 'prompt') tlLanguage.value = value;
   if (source !== 'translation') tl2Language.value = value;
-  saveSettings();
   if (source !== 'translation') saveTl2Language();
 }
 
@@ -269,7 +262,6 @@ async function saveSettings() {
   await chrome.storage.sync.set({
     ocrHost: hostInput.value.trim() || 'localhost',
     ocrPort: parseInt(portInput.value, 10) || 8765,
-    ocrLanguage: languageSelect.value || 'original',
     ocrAutoscroll: autoscrollCheckbox.checked
   });
 }
