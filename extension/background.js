@@ -220,7 +220,6 @@ async function handleTranslateStart(msg) {
     [`tl2Progress:${tabId}`]: `Translating to ${language}...`
   });
   await chrome.storage.local.remove(`tl2Result:${tabId}`);
-  console.log('[bg] stored tl2Translating for tab', tabId);
   chrome.runtime.sendMessage({ type: 'tl2:translating', tabId, value: true }).catch(() => {});
 
   try {
@@ -277,7 +276,6 @@ async function ensureContentScript(tabId) {
     await chrome.scripting.insertCSS({ target: { tabId }, files: ['overlay.css'] });
   } catch (e) {
     // Script already loaded or cannot inject — either way, try messaging next.
-    console.debug('ensureContentScript inject skipped:', e.message);
   }
 }
 
