@@ -361,8 +361,12 @@ async function doTranslation() {
 
   tl2Translate.textContent = 'Stop';
   tl2Translate.classList.add('danger');
-  if (currentTabId) chrome.storage.local.set({ [`tl2Translating:${currentTabId}`]: true });
   setTl2Progress(`Translating to ${language}...`);
+  // Persist translating state BEFORE delegating to background, so it
+  // survives even if the popup closes during the sendMessage call.
+  if (currentTabId) {
+    await chrome.storage.local.set({ [`tl2Translating:${currentTabId}`]: true });
+  }
 
   // Delegate the fetch to the background service worker so it survives
   // popup close.  The popup context is destroyed when the popup closes,
