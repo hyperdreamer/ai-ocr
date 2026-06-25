@@ -176,6 +176,10 @@ async function init() {
   const tl2resKey = currentTabId ? `tl2Result:${currentTabId}` : null;
   const tl2res = tl2resKey ? await chrome.storage.local.get(tl2resKey) : {};
 
+  console.log('[init] tabId=', currentTabId,
+    'translating=', tl2trans[tl2transKey],
+    'hasResult=', !!tl2res[tl2resKey]);
+
   if (tl2trans[tl2transKey] && tl2res[tl2resKey]) {
     // Translation completed while popup was closed — show result
     tl2Translate.textContent = 'Translate';
@@ -183,13 +187,16 @@ async function init() {
     tl2Result.value = tl2res[tl2resKey];
     tl2Copy.disabled = tl2Download.disabled = false;
     chrome.storage.local.remove(tl2transKey);
+    tl2Progress.textContent = '[init] completed while closed';
   } else if (tl2trans[tl2transKey]) {
     tl2Translate.textContent = 'Stop';
     tl2Translate.classList.add('danger');
     tl2Copy.disabled = tl2Download.disabled = true;
+    tl2Progress.textContent = '[init] still translating';
   } else {
     tl2Translate.textContent = 'Translate';
     tl2Translate.classList.remove('danger');
+    tl2Progress.textContent = '[init] idle';
   }
   updateTranslationButtons();
 

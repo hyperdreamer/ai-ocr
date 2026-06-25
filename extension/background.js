@@ -217,6 +217,7 @@ async function handleTranslateStart(msg) {
     [`tl2Translating:${tabId}`]: true,
     [`tl2Progress:${tabId}`]: `Translating to ${language}...`
   });
+  console.log('[bg] stored tl2Translating for tab', tabId);
   chrome.runtime.sendMessage({ type: 'tl2:translating', tabId, value: true }).catch(() => {});
 
   try {
