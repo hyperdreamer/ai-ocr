@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import sys
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -284,6 +285,12 @@ async def _post_openai_chat_completion(config: AIConfig, messages: list[dict[str
     }
     headers = {"Authorization": f"Bearer {config.api_key}"}
 
+    # ── debug ──────────────────────────────────────────────
+    _in_len = sum(len(str(m.get("content", ""))) for m in messages)
+    print(f"[translate] sending to {config.api_base} — {_in_len} chars input",
+          flush=True)
+    # ────────────────────────────────────────────────────────
+
     async def _do_request() -> httpx.Response:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(
@@ -301,17 +308,32 @@ async def _post_openai_chat_completion(config: AIConfig, messages: list[dict[str
 
     response = await _call_with_retry(config, _do_request, "OpenAI")
 
+    # ── debug ──────────────────────────────────────────────
+    print(f"[translate] got response status={response.status_code} "
+          f"content-length={response.headers.get('content-length', '?')}",
+          flush=True)
+    # ────────────────────────────────────────────────────────
+
     if response.is_error:
         detail = response.text
         if len(detail) > 500:
             detail = detail[:500] + "..."
         raise HTTPException(status_code=502, detail=f"OpenAI API failed: {detail}")
 
+    # ── debug ──────────────────────────────────────────────
+    print(f"[translate] parsing JSON response...", flush=True)
+    # ────────────────────────────────────────────────────────
+
     payload = response.json()
+
+    # ── debug ──────────────────────────────────────────────
+    _text = _extract_openai_text(payload)
+    print(f"[translate] parsed OK — {len(_text)} chars output", flush=True)
+    # ────────────────────────────────────────────────────────
 
     usage = payload.get("usage") or {}
     return OCRResponse(
-        text=_extract_openai_text(payload),
+        text=_text,
         model=str(payload.get("model") or config.model),
         tokens_used=int(usage.get("total_tokens") or 0),
     )
