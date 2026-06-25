@@ -63,7 +63,7 @@
       hint.textContent = 'Drag to adjust. Ctrl+Space to confirm. Esc to cancel.';
     } else {
       region = { x: 0, y: 0, width: 0, height: 0 };
-      hint.textContent = 'Drag to select OCR region. Press Esc to cancel.';
+      hint.textContent = 'Drag to select OCR region. Ctrl+Space to confirm. Esc to cancel.';
     }
 
     drawRegion();
