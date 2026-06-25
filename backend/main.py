@@ -15,7 +15,7 @@ import httpx
 import yaml
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel
 
@@ -579,7 +579,7 @@ async def dedup(request: DedupRequest) -> OCRResponse:
 
 
 @app.post("/translate", response_model=None)
-async def translate(request: TranslateRequest) -> JSONResponse:
+async def translate(request: TranslateRequest) -> Response:
     """Accept text and return a translation from the configured AI model."""
 
     try:
@@ -600,7 +600,7 @@ async def translate(request: TranslateRequest) -> JSONResponse:
     body_str = _json.dumps(body, ensure_ascii=False)
     print(f"[translate] JSON done — {len(body_str)} bytes", flush=True)
     # ────────────────────────────────────────────────────────
-    return JSONResponse(content=body_str, media_type="application/json")
+    return Response(content=body_str.encode("utf-8"), media_type="application/json")
 
 
 if __name__ == "__main__":
