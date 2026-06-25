@@ -368,6 +368,8 @@ async function doTranslation() {
 
   tl2Translate.textContent = 'Stop';
   tl2Translate.classList.add('danger');
+  tl2Result.value = '';
+  tl2Copy.disabled = tl2Download.disabled = true;
   setTl2Progress(`Translating to ${language}...`);
 
   // Delegate the fetch to the background service worker so it survives
