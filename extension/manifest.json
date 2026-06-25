@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Qidian OCR Capture",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Select a page region, OCR repeated viewport captures, and download merged text.",
   "permissions": [
     "activeTab",
