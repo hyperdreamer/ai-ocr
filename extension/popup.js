@@ -91,16 +91,9 @@ chrome.runtime.onMessage.addListener((message) => {
     tl2Copy.disabled = tl2Download.disabled = !message.text;
     tl2Translate.textContent = 'Translate';
     tl2Translate.classList.remove('danger');
-    tl2AbortController = null;
+    chrome.storage.local.remove(`tl2Translating:${currentTabId}`);
     setTl2Progress(message.text ? 'Translation complete.' : 'Translation failed.');
     updateTranslationButtons();
-  }
-  if (message?.type === 'translation:start') {
-    if (message.tabId !== currentTabId) return;
-    tl2Translate.textContent = 'Stop';
-    tl2Translate.classList.add('danger');
-    tl2Copy.disabled = tl2Download.disabled = true;
-    setTl2Progress('Translating...');
   }
   if (message?.type === 'tl2:translating') {
     if (message.tabId !== currentTabId) return;
@@ -330,9 +323,6 @@ function renderState(state) {
     tl2Translate.classList.add('danger');
     tl2Copy.disabled = tl2Download.disabled = true;
     setTl2Progress('Translating...');
-  } else if (!latestState.active && !latestState.tl2Translating) {
-    // Only reset button if not actively translating and not in capture
-    if (tl2AbortController) return; // Don't reset during user-initiated translate
   }
 }
 
@@ -347,7 +337,6 @@ function downloadOcrText() {
 }
 
 // ── Translation panel actions ─────────────────────────────────
-let tl2AbortController = null;
 
 async function doTranslation() {
   // Button shows "Stop" — abort the background translation

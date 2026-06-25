@@ -487,6 +487,12 @@ async function autoTranslateIfEnabled(tabId, originalText) {
   });
   if (!ocrAutoTranslate || ocrLanguage === 'original') return;
 
+  // Abort any in-flight translation for this tab
+  handleTranslateStop(tabId);
+
+  const controller = new AbortController();
+  translateControllers.set(tabId, controller);
+
   updateState(tabId, { tl2Translating: true });
   await chrome.storage.local.set({
     [`tl2Translating:${tabId}`]: true,
@@ -501,18 +507,24 @@ async function autoTranslateIfEnabled(tabId, originalText) {
     const response = await fetch(url + '?_=' + Date.now(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: originalText, language: ocrLanguage, prompt: stored[key] || undefined })
+      body: JSON.stringify({ text: originalText, language: ocrLanguage, prompt: stored[key] || undefined }),
+      signal: controller.signal
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
+    if (payload.error) throw new Error(payload.error);
     const translated = payload.text || '';
     updateState(tabId, { tl2Translating: false });
     chrome.storage.local.set({ [`tl2Result:${tabId}`]: translated });
     chrome.runtime.sendMessage({ type: 'translation:update', tabId, text: translated }).catch(() => {});
   } catch (e) {
+    if (e.name === 'AbortError') return; // User clicked Stop — silent
     console.error('Auto-translate failed:', e);
     updateState(tabId, { tl2Translating: false });
+    chrome.storage.local.remove(`tl2Translating:${tabId}`);
     chrome.runtime.sendMessage({ type: 'translation:update', tabId, text: '' }).catch(() => {});
+  } finally {
+    translateControllers.delete(tabId);
   }
 }
 
