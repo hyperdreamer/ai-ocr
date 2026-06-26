@@ -700,8 +700,8 @@ async function copyToClipboard(text) {
   try {
     await chrome.offscreen.createDocument({
       url: 'offscreen.html',
-      reasons: ['CLIPBOARD'],
-      justification: 'Copy OCR result to clipboard'
+      reasons: ['CLIPBOARD', 'DOM_PARSER'],
+      justification: 'Clipboard and download access for OCR results'
     });
   } catch (e) {
     // Document may already exist — that's fine
@@ -740,14 +740,21 @@ async function autoSaveIfEnabled(text) {
     tl2AutoSave: false, tl2AutoSavePath: ''
   });
   if (!tl2AutoSave || !tl2AutoSavePath || !text) return;
-  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  chrome.downloads.download({
-    url,
-    filename: tl2AutoSavePath,
-    saveAs: false,
-    conflictAction: 'overwrite'
-  }, () => setTimeout(() => URL.revokeObjectURL(url), 30000));
+  // Route through offscreen document so blob URL works reliably
+  try {
+    await chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['CLIPBOARD', 'DOM_PARSER'],
+      justification: 'Clipboard and download access for OCR results'
+    });
+  } catch (e) {
+    // Document may already exist — that's fine
+  }
+  chrome.runtime.sendMessage({
+    type: 'offscreen:download',
+    text,
+    filename: tl2AutoSavePath
+  }).catch(() => {});
   // Notify user
   chrome.notifications.create('auto-save', {
     type: 'basic',
