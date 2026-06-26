@@ -416,15 +416,13 @@ function updateTranslationButtons() {
   tl2Download.disabled = !hasResult;
 }
 
-function saveTranslation() {
+async function saveTranslation() {
   const text = tl2Result.value.trim();
   if (!text) return;
   const path = tl2AutosavePath.value.trim();
   const filename = path || `translation-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
-  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  chrome.downloads.download({ url, filename, saveAs: false, conflictAction: 'overwrite' },
-    () => setTimeout(() => URL.revokeObjectURL(url), 30000));
+  // Route through background → offscreen document for reliable download
+  chrome.runtime.sendMessage({ type: 'save:translation', text, filename }).catch(() => {});
   tl2Save.textContent = 'Saved!';
   setTimeout(() => tl2Save.textContent = 'Save', 1500);
   setTl2Progress(`Saved to ${filename}.`);

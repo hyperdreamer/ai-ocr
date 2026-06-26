@@ -117,6 +117,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
+  if (message?.type === 'save:translation') {
+    handleSaveTranslation(message).then((r) => sendResponse(r)).catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
   return false;
 });
 
@@ -263,6 +267,23 @@ function handleTranslateStop(tabId) {
     translateControllers.delete(tabId);
     chrome.storage.local.remove(`tl2Translating:${tabId}`);
   }
+}
+
+async function handleSaveTranslation(msg) {
+  const { text, filename } = msg;
+  if (!text || !filename) return { ok: false, error: 'Missing text or filename' };
+  // Route through offscreen document for reliable blob URL resolution
+  try {
+    await chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['CLIPBOARD', 'DOM_PARSER'],
+      justification: 'Clipboard and download access for OCR results'
+    });
+  } catch (e) {
+    // Document may already exist — that's fine
+  }
+  chrome.runtime.sendMessage({ type: 'offscreen:download', text, filename }).catch(() => {});
+  return { ok: true };
 }
 
 async function getActiveTab() {
