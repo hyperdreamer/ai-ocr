@@ -427,6 +427,14 @@ function saveTranslation() {
     () => setTimeout(() => URL.revokeObjectURL(url), 30000));
   tl2Save.textContent = 'Saved!';
   setTimeout(() => tl2Save.textContent = 'Save', 1500);
+  setTl2Progress(`Saved to ${filename}.`);
+  chrome.notifications.create('tl2-manual-save', {
+    type: 'basic',
+    iconUrl: 'icons/icon128.png',
+    title: 'AI OCR — Saved',
+    message: `Translation saved to ${filename}.`,
+    priority: 0
+  });
 }
 
 function downloadAsFile(text, prefix) {
