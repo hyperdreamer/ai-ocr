@@ -272,17 +272,9 @@ function handleTranslateStop(tabId) {
 async function handleSaveTranslation(msg) {
   const { text, filename } = msg;
   if (!text || !filename) return { ok: false, error: 'Missing text or filename' };
-  // Route through offscreen document for reliable blob URL resolution
-  try {
-    await chrome.offscreen.createDocument({
-      url: 'offscreen.html',
-      reasons: ['CLIPBOARD', 'DOM_PARSER'],
-      justification: 'Clipboard and download access for OCR results'
-    });
-  } catch (e) {
-    // Document may already exist — that's fine
-  }
-  chrome.runtime.sendMessage({ type: 'offscreen:download', text, filename }).catch(() => {});
+  // Use data URL — works directly from service worker, no blob URL issues
+  const dataUrl = 'data:text/plain;charset=utf-8,' + encodeURIComponent(text);
+  chrome.downloads.download({ url: dataUrl, filename, saveAs: false, conflictAction: 'overwrite' });
   return { ok: true };
 }
 
@@ -761,21 +753,14 @@ async function autoSaveIfEnabled(text) {
     tl2AutoSave: false, tl2AutoSavePath: ''
   });
   if (!tl2AutoSave || !tl2AutoSavePath || !text) return;
-  // Route through offscreen document so blob URL works reliably
-  try {
-    await chrome.offscreen.createDocument({
-      url: 'offscreen.html',
-      reasons: ['CLIPBOARD', 'DOM_PARSER'],
-      justification: 'Clipboard and download access for OCR results'
-    });
-  } catch (e) {
-    // Document may already exist — that's fine
-  }
-  chrome.runtime.sendMessage({
-    type: 'offscreen:download',
-    text,
-    filename: tl2AutoSavePath
-  }).catch(() => {});
+  // Use data URL — works directly from service worker, no blob URL issues
+  const dataUrl = 'data:text/plain;charset=utf-8,' + encodeURIComponent(text);
+  chrome.downloads.download({
+    url: dataUrl,
+    filename: tl2AutoSavePath,
+    saveAs: false,
+    conflictAction: 'overwrite'
+  });
   // Notify user
   chrome.notifications.create('auto-save', {
     type: 'basic',
