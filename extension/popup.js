@@ -45,6 +45,7 @@ const panels = {
 let latestState = null;
 let currentTabId = null;
 let userEditedResult = false;
+const LOCAL_BACKEND_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 // ── Tab switching ─────────────────────────────────────────────
 tabs.forEach(tab => {
@@ -57,7 +58,12 @@ tabs.forEach(tab => {
 });
 
 // ── OCR panel listeners ───────────────────────────────────────
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', () => {
+  init().catch((error) => {
+    progressEl.textContent = `Initialization failed: ${error.message}`;
+    setTl2Progress(`Initialization failed: ${error.message}`);
+  });
+});
 startButton.addEventListener('click', startCapture);
 stopButton.addEventListener('click', stopCapture);
 retryButton.addEventListener('click', retryCapture);
@@ -104,7 +110,7 @@ chrome.runtime.onMessage.addListener((message) => {
     tl2Translate.textContent = 'Translate';
     tl2Translate.classList.remove('danger');
     chrome.storage.local.remove(`tl2Translating:${currentTabId}`);
-    setTl2Progress(message.text ? 'Translation complete.' : 'Translation failed.');
+    setTl2Progress(message.text ? 'Translation complete.' : (message.error || 'Translation failed.'));
     updateTranslationButtons();
     // Auto-copy / auto-save is handled by the background service worker
     // (autoCopyIfEnabled / autoSaveIfEnabled) — doing it here as well would
@@ -249,6 +255,10 @@ function syncLanguage(source) {
   if (source !== 'prompt') tlLanguage.value = value;
   if (source !== 'translation') tl2Language.value = value;
   if (source !== 'translation') saveTl2Language();
+  if (source === 'translation') {
+    chrome.storage.local.set({ tlLanguage: value });
+    loadPromptForLanguage();
+  }
 }
 
 async function onTlLanguageChange() {
@@ -261,11 +271,20 @@ async function onTlLanguageChange() {
 }
 
 async function saveSettings() {
+  let backend;
+  try {
+    backend = normalizeBackendSettings(hostInput.value, portInput.value);
+  } catch (e) {
+    progressEl.textContent = e.message;
+    return;
+  }
   await chrome.storage.sync.set({
-    ocrHost: hostInput.value.trim() || 'localhost',
-    ocrPort: parseInt(portInput.value, 10) || 8765,
+    ocrHost: backend.host,
+    ocrPort: backend.port,
     ocrAutoscroll: autoscrollCheckbox.checked
   });
+  hostInput.value = backend.host;
+  portInput.value = backend.port;
 }
 
 // ── OCR actions ───────────────────────────────────────────────
@@ -292,19 +311,37 @@ async function startCapture() {
   userEditedResult = false;
   startButton.disabled = true;
   progressEl.textContent = 'Starting region selection.';
-  const response = await chrome.runtime.sendMessage({ type: 'popup:start' });
-  if (!response?.ok) {
-    progressEl.textContent = response?.error || 'Unable to start capture.';
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'popup:start' });
+    if (!response?.ok) {
+      progressEl.textContent = response?.error || 'Unable to start capture.';
+      startButton.disabled = false;
+    }
+  } catch (e) {
+    progressEl.textContent = e.message || 'Unable to start capture.';
     startButton.disabled = false;
   }
 }
 
-async function stopCapture() { stopButton.disabled = true; await chrome.runtime.sendMessage({ type: 'popup:stop' }); }
+async function stopCapture() {
+  stopButton.disabled = true;
+  try {
+    await chrome.runtime.sendMessage({ type: 'popup:stop' });
+  } catch (e) {
+    progressEl.textContent = e.message || 'Unable to stop capture.';
+    stopButton.disabled = false;
+  }
+}
 async function retryCapture() {
   retryButton.disabled = true;
   progressEl.textContent = 'Retrying...';
-  const r = await chrome.runtime.sendMessage({ type: 'popup:retry' });
-  if (!r?.ok) { progressEl.textContent = r?.error || 'Retry failed.'; retryButton.disabled = false; }
+  try {
+    const r = await chrome.runtime.sendMessage({ type: 'popup:retry' });
+    if (!r?.ok) { progressEl.textContent = r?.error || 'Retry failed.'; retryButton.disabled = false; }
+  } catch (e) {
+    progressEl.textContent = e.message || 'Retry failed.';
+    retryButton.disabled = false;
+  }
 }
 
 function renderState(state) {
@@ -362,10 +399,15 @@ async function doTranslation() {
   }
 
   const text = resultEl.value.trim();
-  if (!text) return;
+  if (!text || !currentTabId) return;
   const language = tl2Language.value;
-  const host = hostInput.value.trim() || 'localhost';
-  const port = parseInt(portInput.value, 10) || 8765;
+  let backend;
+  try {
+    backend = normalizeBackendSettings(hostInput.value, portInput.value);
+  } catch (e) {
+    setTl2Progress(e.message);
+    return;
+  }
 
   tl2Translate.textContent = 'Stop';
   tl2Translate.classList.add('danger');
@@ -381,9 +423,21 @@ async function doTranslation() {
     tabId: currentTabId,
     text,
     language,
-    host,
-    port
-  }).catch(() => {});
+    host: backend.host,
+    port: backend.port
+  }).then((response) => {
+    if (!response?.ok) {
+      tl2Translate.textContent = 'Translate';
+      tl2Translate.classList.remove('danger');
+      updateTranslationButtons();
+      setTl2Progress(response?.error || 'Translation failed.');
+    }
+  }).catch((e) => {
+    tl2Translate.textContent = 'Translate';
+    tl2Translate.classList.remove('danger');
+    updateTranslationButtons();
+    setTl2Progress(e.message || 'Translation failed.');
+  });
 }
 
 function stopTranslation() {
@@ -426,8 +480,9 @@ async function saveTranslation() {
   }
 
   try {
-    const url = `http://${hostInput.value.trim() || 'localhost'}:${parseInt(portInput.value, 10) || 8765}/save`;
-    const response = await fetch(url, {
+    const backend = normalizeBackendSettings(hostInput.value, portInput.value);
+    const url = `http://${backend.host}:${backend.port}/save`;
+    const response = await fetchWithTimeout(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, path })
@@ -486,9 +541,11 @@ const MAX_PATH_HISTORY = 20;
 function loadPathSuggestions() {
   chrome.storage.local.get(PATH_HISTORY_KEY, (r) => {
     const history = r[PATH_HISTORY_KEY] || [];
-    tl2PathSuggestions.innerHTML = history
-      .map(p => `<option value="${escapeHtml(p)}">`)
-      .join('');
+    tl2PathSuggestions.replaceChildren(...history.map((path) => {
+      const option = document.createElement('option');
+      option.value = path;
+      return option;
+    }));
   });
 }
 
@@ -504,6 +561,33 @@ function updatePathSuggestions(current) {
   });
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12 * 60 * 1000);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function normalizeBackendSettings(host, port) {
+  let normalizedHost = String(host || 'localhost').trim();
+  if (/^https?:\/\//i.test(normalizedHost)) {
+    normalizedHost = new URL(normalizedHost).hostname;
+  }
+  normalizedHost = normalizedHost.replace(/^\[(.*)\]$/, '$1').toLowerCase();
+  if (!LOCAL_BACKEND_HOSTS.has(normalizedHost)) {
+    throw new Error('Backend host must be localhost, 127.0.0.1, or ::1.');
+  }
+
+  const normalizedPort = Number.parseInt(port, 10);
+  if (!Number.isInteger(normalizedPort) || normalizedPort < 1 || normalizedPort > 65535) {
+    throw new Error('Backend port must be between 1 and 65535.');
+  }
+
+  return {
+    host: normalizedHost === '::1' ? '[::1]' : normalizedHost,
+    port: normalizedPort
+  };
 }

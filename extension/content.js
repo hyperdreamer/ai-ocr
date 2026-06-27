@@ -55,10 +55,10 @@
     // Pre-draw saved region if available
     if (saved && saved.width >= MIN_SIZE && saved.height >= MIN_SIZE) {
       region = {
-        x: clamp(saved.x, 0, window.innerWidth - MIN_SIZE),
-        y: clamp(saved.y, 0, window.innerHeight - MIN_SIZE),
-        width: clamp(saved.width, MIN_SIZE, window.innerWidth - clamp(saved.x, 0, window.innerWidth)),
-        height: clamp(saved.height, MIN_SIZE, window.innerHeight - clamp(saved.y, 0, window.innerHeight))
+        x: clamp(saved.x, 0, Math.max(0, window.innerWidth - MIN_SIZE)),
+        y: clamp(saved.y, 0, Math.max(0, window.innerHeight - MIN_SIZE)),
+        width: clamp(saved.width, MIN_SIZE, Math.max(MIN_SIZE, window.innerWidth - clamp(saved.x, 0, window.innerWidth))),
+        height: clamp(saved.height, MIN_SIZE, Math.max(MIN_SIZE, window.innerHeight - clamp(saved.y, 0, window.innerHeight)))
       };
       hint.textContent = 'Drag to adjust. Ctrl+Space to confirm. Esc to cancel.';
     } else {
@@ -197,7 +197,7 @@
     // captureVisibleTab doesn't snapshot the hint text or selection UI.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        chrome.runtime.sendMessage({ type: 'selection:complete', region: result });
+        chrome.runtime.sendMessage({ type: 'selection:complete', region: result }).catch(() => {});
       });
     });
   }
@@ -205,7 +205,7 @@
   function onKeyDown(event) {
     if (event.key === 'Escape') {
       removeOverlay();
-      chrome.runtime.sendMessage({ type: 'selection:cancelled' });
+      chrome.runtime.sendMessage({ type: 'selection:cancelled' }).catch(() => {});
     }
     if (event.key === ' ' && event.ctrlKey) {
       event.preventDefault();
@@ -279,6 +279,7 @@
   }
 
   function clamp(value, min, max) {
+    if (max < min) return min;
     return Math.min(max, Math.max(min, value));
   }
 })();

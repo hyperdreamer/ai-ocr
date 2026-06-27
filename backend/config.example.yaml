@@ -1,8 +1,18 @@
-# Server bind address. Defaults to "0.0.0.0" when omitted.
-host: "0.0.0.0"
+# Server bind address. Defaults to "127.0.0.1" when omitted.
+# Use "0.0.0.0" only on a trusted network; the backend exposes OCR and save APIs.
+host: "127.0.0.1"
 
 # Server port. Defaults to 8765 when omitted.
 port: 8765
+
+# Save requests are constrained to this directory. Relative save paths are
+# resolved under this root, and absolute paths must also stay inside it.
+save_root: "~"
+
+# Basic request limits to avoid unbounded memory use and accidental large
+# provider calls.
+max_upload_bytes: 15728640
+max_text_chars: 200000
 
 # AI provider settings.
 ai:
@@ -17,6 +27,7 @@ ai:
   # API key for the provider. Plaintext values are used directly.
   # Prefix with ``$`` to treat the value as an environment variable name
   # (e.g. ``$OCR_API_KEY`` resolves ``os.getenv("OCR_API_KEY")``).
+  # Alternatively set ``api_key_env`` to the name of an environment variable.
   # The backend also falls back to OCR_API_KEY and provider-specific defaults.
   # Examples: $OCR_API_KEY, $OPENAI_API_KEY, $ANTHROPIC_API_KEY.
   api_key: "$OCR_API_KEY"

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
-import sys
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -21,8 +21,11 @@ from pydantic import BaseModel
 
 
 CONFIG_PATH = Path(__file__).with_name("config.yaml")
-DEFAULT_HOST = "0.0.0.0"
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+DEFAULT_SAVE_ROOT = "~"
+DEFAULT_MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+DEFAULT_MAX_TEXT_CHARS = 200_000
 OCR_PROMPT = "Transcribe all text visible in this image. Return only the transcription."
 DEDUP_PROMPT = (
     "Remove any duplicate or overlapping content. Return only the deduplicated text. "
@@ -94,6 +97,9 @@ class AppConfig:
 
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
+    save_root: Path = Path(DEFAULT_SAVE_ROOT)
+    max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
+    max_text_chars: int = DEFAULT_MAX_TEXT_CHARS
     ai: AIConfig | None = None
 
 
@@ -115,19 +121,29 @@ def _load_yaml_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
 def _read_api_key(ai_section: dict[str, Any], provider: str) -> str:
     """Resolve an API key from config.yaml — plaintext or environment variable.
 
-    By default ``api_key`` is treated as a plaintext value and returned as-is.
-    Prefix the value with ``$`` to treat it as an environment variable name
-    (e.g. ``$OCR_API_KEY`` resolves ``os.getenv("OCR_API_KEY")``).
+    ``api_key_env`` names an environment variable to read the key from.
+    ``api_key`` is treated as a plaintext value and returned as-is, unless it
+    is prefixed with ``$`` (e.g. ``$OCR_API_KEY`` resolves
+    ``os.getenv("OCR_API_KEY")``).
 
     When neither ``api_key`` nor ``api_key_env`` is configured, the function
     falls back to ``OCR_API_KEY`` and provider-specific environment variables.
     """
 
-    raw = ai_section.get("api_key_env") or ai_section.get("api_key")
+    # ``api_key_env`` is always an environment variable name.
+    env_ref = ai_section.get("api_key_env")
+    if isinstance(env_ref, str) and env_ref:
+        env_name = env_ref[1:] if env_ref.startswith("$") else env_ref
+        api_key = os.getenv(env_name)
+        if api_key:
+            return api_key
+        raise RuntimeError(f"API key not found in environment variable: {env_name}")
+
+    raw = ai_section.get("api_key")
     if isinstance(raw, str) and raw:
         # Explicit $ prefix → resolve as environment variable
         if raw.startswith("$"):
-            env_name = raw.lstrip("$")
+            env_name = raw[1:]
             api_key = os.getenv(env_name)
             if api_key:
                 return api_key
@@ -187,6 +203,9 @@ def load_config() -> AppConfig:
     return AppConfig(
         host=str(raw_config.get("host", DEFAULT_HOST)),
         port=int(raw_config.get("port", DEFAULT_PORT)),
+        save_root=Path(str(raw_config.get("save_root", DEFAULT_SAVE_ROOT))).expanduser(),
+        max_upload_bytes=int(raw_config.get("max_upload_bytes", DEFAULT_MAX_UPLOAD_BYTES)),
+        max_text_chars=int(raw_config.get("max_text_chars", DEFAULT_MAX_TEXT_CHARS)),
         ai=AIConfig(
             provider=provider,
             api_base=api_base,
@@ -197,6 +216,28 @@ def load_config() -> AppConfig:
             text_model=text_model,
         ),
     )
+
+
+def _validate_text_size(text: str, config: AppConfig) -> None:
+    """Reject oversized text requests before sending them to costly model APIs."""
+
+    if len(text) > config.max_text_chars:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Text exceeds configured limit of {config.max_text_chars} characters",
+        )
+
+
+async def _read_limited_upload(image: UploadFile, max_bytes: int) -> bytes:
+    """Read an upload with a hard size limit to avoid unbounded memory use."""
+
+    image_bytes = await image.read(max_bytes + 1)
+    if len(image_bytes) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Image exceeds configured limit of {max_bytes} bytes",
+        )
+    return image_bytes
 
 
 def _image_to_data_url(image_bytes: bytes, content_type: str | None) -> str:
@@ -336,7 +377,7 @@ async def _post_openai_chat_completion(
             detail = detail[:500] + "..."
         raise HTTPException(status_code=502, detail=f"OpenAI API failed: {detail}")
 
-    payload = response.json()
+    payload = _decode_provider_json(response, "OpenAI")
     _text = _extract_openai_text(payload)
     usage = payload.get("usage") or {}
     return OCRResponse(
@@ -419,7 +460,7 @@ async def _post_anthropic_message(
             detail = detail[:500] + "..."
         raise HTTPException(status_code=502, detail=f"Anthropic API failed: {detail}")
 
-    payload = response.json()
+    payload = _decode_provider_json(response, "Anthropic")
     usage = payload.get("usage") or {}
     tokens_used = int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
     return OCRResponse(
@@ -427,6 +468,24 @@ async def _post_anthropic_message(
         model=str(payload.get("model") or config.model),
         tokens_used=tokens_used,
     )
+
+
+def _decode_provider_json(response: httpx.Response, provider_name: str) -> dict[str, Any]:
+    """Decode provider JSON without leaking tracebacks to API clients."""
+
+    try:
+        payload = response.json()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"{provider_name} API returned invalid JSON",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=502,
+            detail=f"{provider_name} API returned an unexpected response shape",
+        )
+    return payload
 
 
 async def _call_anthropic(config: AIConfig, data_url: str, model_override: str | None = None) -> OCRResponse:
@@ -562,7 +621,7 @@ async def catch_all_handler(_request: Request, exc: Exception) -> JSONResponse:
     traceback.print_exc()
     return JSONResponse(
         status_code=500,
-        content=_error_payload(f"Internal error: {type(exc).__name__}: {exc}"),
+        content=_error_payload("Internal server error"),
     )
 
 
@@ -581,7 +640,7 @@ async def ocr(image: UploadFile | None = File(default=None)) -> OCRResponse:
     if config.ai is None:
         raise HTTPException(status_code=500, detail="AI provider configuration is missing")
 
-    image_bytes = await image.read()
+    image_bytes = await _read_limited_upload(image, config.max_upload_bytes)
     data_url = _image_to_data_url(image_bytes, image.content_type)
     return await transcribe_image(config.ai, data_url)
 
@@ -598,6 +657,7 @@ async def dedup(request: DedupRequest) -> OCRResponse:
     if config.ai is None:
         raise HTTPException(status_code=500, detail="AI provider configuration is missing")
 
+    _validate_text_size(request.text, config)
     return await deduplicate_text(config.ai, request.text)
 
 
@@ -613,11 +673,10 @@ async def translate(request: TranslateRequest) -> Response:
     if config.ai is None:
         return JSONResponse(status_code=500, content=_error_payload("AI provider configuration is missing"))
 
-    import json as _json
-
+    _validate_text_size(request.text, config)
     result = await translate_text(config.ai, request.text, request.language, request.prompt)
     body = {"text": result.text, "model": result.model, "tokens_used": result.tokens_used}
-    body_bytes = _json.dumps(body, ensure_ascii=False).encode("utf-8")
+    body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
     return Response(
         content=body_bytes,
         media_type="application/json",
@@ -629,16 +688,34 @@ async def translate(request: TranslateRequest) -> Response:
 async def save_text(request: SaveRequest) -> dict[str, str | bool]:
     """Write text to a local path on the backend machine."""
 
+    try:
+        config = load_config()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     raw_path = request.path.strip()
     if not raw_path:
         raise HTTPException(status_code=400, detail="Missing save path")
 
-    path = Path(raw_path).expanduser()
-    if not path.is_absolute():
-        path = Path.cwd() / path
+    _validate_text_size(request.text, config)
+    save_root = config.save_root.expanduser().resolve()
+    candidate = Path(raw_path).expanduser()
+    path = candidate if candidate.is_absolute() else save_root / candidate
+    path = path.resolve()
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(request.text, encoding="utf-8")
+    try:
+        path.relative_to(save_root)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Save path must stay under configured save_root: {save_root}",
+        ) from exc
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(request.text, encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save text: {exc.strerror or exc}") from exc
     return {"ok": True, "path": str(path)}
 
 

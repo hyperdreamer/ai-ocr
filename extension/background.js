@@ -1,13 +1,41 @@
 
 const DEFAULT_HOST = 'localhost';
 const DEFAULT_PORT = 8765;
-const DEFAULT_LANGUAGE = 'original';
 const OVERLAP_PX = 50;
 const AFTER_SEND_DELAY_MS = 0;
+const BACKEND_TIMEOUT_MS = 12 * 60 * 1000;
+const MAX_CAPTURE_PAGES = 500;
+const LOCAL_BACKEND_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 async function getBackendEndpoint(path) {
   const items = await chrome.storage.sync.get({ ocrHost: DEFAULT_HOST, ocrPort: DEFAULT_PORT });
-  return `http://${items.ocrHost}:${items.ocrPort}${path}`;
+  return buildBackendEndpoint(items.ocrHost, items.ocrPort, path);
+}
+
+function buildBackendEndpoint(host, port, path) {
+  const normalized = normalizeBackendSettings(host, port);
+  return `http://${normalized.host}:${normalized.port}${path}`;
+}
+
+function normalizeBackendSettings(host, port) {
+  let normalizedHost = String(host || DEFAULT_HOST).trim();
+  if (/^https?:\/\//i.test(normalizedHost)) {
+    normalizedHost = new URL(normalizedHost).hostname;
+  }
+  normalizedHost = normalizedHost.replace(/^\[(.*)\]$/, '$1').toLowerCase();
+  if (!LOCAL_BACKEND_HOSTS.has(normalizedHost)) {
+    throw new Error('Backend host must be localhost, 127.0.0.1, or ::1.');
+  }
+
+  const normalizedPort = Number.parseInt(port, 10);
+  if (!Number.isInteger(normalizedPort) || normalizedPort < 1 || normalizedPort > 65535) {
+    throw new Error('Backend port must be between 1 and 65535.');
+  }
+
+  return {
+    host: normalizedHost === '::1' ? '[::1]' : normalizedHost,
+    port: normalizedPort
+  };
 }
 
 let states = new Map();
@@ -31,6 +59,20 @@ chrome.storage.local.get('lastRegion', (items) => {
     savedLastRegion = items.lastRegion;
     states.forEach((state) => { state.lastRegion = savedLastRegion; });
   }
+});
+
+// Clean up per-tab state and storage when a tab is closed, so the in-memory
+// Map and chrome.storage.local don't grow unbounded over a browsing session.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  states.delete(tabId);
+  handleTranslateStop(tabId);
+  chrome.storage.local.remove([
+    `lastResult:${tabId}`,
+    `tl2Result:${tabId}`,
+    `tl2Language:${tabId}`,
+    `tl2Status:${tabId}`,
+    `tl2Translating:${tabId}`
+  ]).catch(() => {});
 });
 // ── keyboard shortcut ──────────────────────────────────────────
 
@@ -73,6 +115,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const tabId = sender.tab?.id;
     if (!tabId) {
       sendResponse({ ok: false, error: 'No sender tab found.' });
+      return false;
+    }
+    if (!isValidRegion(message.region)) {
+      updateState(tabId, { active: false, status: 'Error', error: 'Invalid selected region.', progress: 'Failed.' });
+      sendResponse({ ok: false, error: 'Invalid selected region.' });
       return false;
     }
     // Remember region for reuse
@@ -212,9 +259,11 @@ async function handleTranslateStart(msg) {
   const controller = new AbortController();
   translateControllers.set(tabId, controller);
 
-  // Client-side safety timeout
-  const TIMEOUT_MS = 12 * 60 * 1000;
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, BACKEND_TIMEOUT_MS);
 
   // Persist state so popup reopen shows "Stop" button.
   // Clear any stale result so init() doesn't mistake an old result
@@ -232,38 +281,47 @@ async function handleTranslateStart(msg) {
     // "Original" with no custom prompt → pass through unchanged
     if (language === 'original' && !stored[key]) {
       const translated = text;
-      chrome.storage.local.set({ [`tl2Result:${tabId}`]: translated });
+      await chrome.storage.local.set({ [`tl2Result:${tabId}`]: translated });
       chrome.runtime.sendMessage({ type: 'translation:update', tabId, text: translated }).catch(() => {});
       if (translated) autoCopyIfEnabled(translated);
       if (translated) autoSaveIfEnabled(translated);
       return { ok: true };
     }
-    const url = `http://${host || 'localhost'}:${port || 8765}/translate?_=${Date.now()}`;
+    const url = buildBackendEndpoint(host || DEFAULT_HOST, port || DEFAULT_PORT, `/translate?_=${Date.now()}`);
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, language, prompt: stored[key] || undefined }),
       signal: controller.signal
     });
-    const payload = await response.json();
+    const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
     if (payload.error) throw new Error(payload.error);
 
     const translated = payload.text || '';
-    chrome.storage.local.set({ [`tl2Result:${tabId}`]: translated });
+    await chrome.storage.local.set({ [`tl2Result:${tabId}`]: translated });
     chrome.runtime.sendMessage({ type: 'translation:update', tabId, text: translated }).catch(() => {});
     // Auto-copy / auto-save translated text
     if (translated) autoCopyIfEnabled(translated);
     if (translated) autoSaveIfEnabled(translated);
   } catch (e) {
-    if (e.name === 'AbortError') return { ok: true }; // User clicked Stop — silent
-    chrome.runtime.sendMessage({ type: 'translation:update', tabId, text: '' }).catch(() => {});
-    // Clear translating state so the popup doesn't reopen stuck on "Stop"
-    chrome.storage.local.remove(`tl2Translating:${tabId}`);
-    chrome.runtime.sendMessage({ type: 'tl2:translating', tabId, value: false }).catch(() => {});
+    if (e.name === 'AbortError') {
+      const message = timedOut ? 'Translation timed out.' : 'Translation stopped.';
+      await chrome.storage.local.set({ [`tl2Status:${tabId}`]: message });
+      if (timedOut) chrome.runtime.sendMessage({ type: 'translation:update', tabId, text: '', error: message }).catch(() => {});
+      return { ok: !timedOut, error: timedOut ? message : undefined };
+    }
+    const errorMessage = e.message || 'Translation failed.';
+    await chrome.storage.local.set({ [`tl2Status:${tabId}`]: errorMessage });
+    chrome.runtime.sendMessage({ type: 'translation:update', tabId, text: '', error: errorMessage }).catch(() => {});
+    return { ok: false, error: errorMessage };
   } finally {
     clearTimeout(timeoutId);
-    translateControllers.delete(tabId);
+    if (translateControllers.get(tabId) === controller) {
+      translateControllers.delete(tabId);
+      chrome.storage.local.remove(`tl2Translating:${tabId}`);
+      chrome.runtime.sendMessage({ type: 'tl2:translating', tabId, value: false }).catch(() => {});
+    }
   }
 
   return { ok: true };
@@ -282,7 +340,7 @@ async function handleSaveTranslation(msg) {
   const { text, path } = msg;
   if (!text || !path) return { ok: false, error: 'Missing text or path' };
   const url = await getBackendEndpoint('/save');
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, path })
@@ -376,6 +434,11 @@ async function runCaptureLoop(tab, region) {
 
     if (!ocrAutoscroll) break;
 
+    if (fragments.length >= MAX_CAPTURE_PAGES) {
+      updateState(tabId, { progress: `Reached page limit (${MAX_CAPTURE_PAGES}). Stopping.` });
+      break;
+    }
+
     const scrollResult = await chrome.tabs.sendMessage(tab.id, {
       type: 'page:scroll-down',
       overlapPx: OVERLAP_PX
@@ -449,6 +512,11 @@ async function resumeCaptureLoop(rs) {
     await sleep(AFTER_SEND_DELAY_MS);
 
     if (!ocrAutoscroll) break;
+
+    if (fragments.length >= MAX_CAPTURE_PAGES) {
+      updateState(tabId, { progress: `Reached page limit (${MAX_CAPTURE_PAGES}). Stopping.` });
+      break;
+    }
 
     const scrollResult = await chrome.tabs.sendMessage(tab.id, {
       type: 'page:scroll-down',
@@ -533,6 +601,11 @@ async function autoTranslateIfEnabled(tabId, originalText) {
 
   const controller = new AbortController();
   translateControllers.set(tabId, controller);
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, BACKEND_TIMEOUT_MS);
 
   updateState(tabId, { tl2Translating: true });
   await chrome.storage.local.set({
@@ -551,24 +624,31 @@ async function autoTranslateIfEnabled(tabId, originalText) {
       body: JSON.stringify({ text: originalText, language, prompt: stored[key] || undefined }),
       signal: controller.signal
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
     if (payload.error) throw new Error(payload.error);
     const translated = payload.text || '';
     updateState(tabId, { tl2Translating: false });
-    chrome.storage.local.set({ [`tl2Result:${tabId}`]: translated });
+    await chrome.storage.local.set({ [`tl2Result:${tabId}`]: translated });
     chrome.runtime.sendMessage({ type: 'translation:update', tabId, text: translated }).catch(() => {});
     // Auto-copy / auto-save translated text
     if (translated) autoCopyIfEnabled(translated);
     if (translated) autoSaveIfEnabled(translated);
   } catch (e) {
-    if (e.name === 'AbortError') return; // User clicked Stop — silent
+    if (e.name === 'AbortError' && !timedOut) return; // User clicked Stop — silent
     console.error('Auto-translate failed:', e);
+    const errorMessage = timedOut ? 'Translation timed out.' : (e.message || 'Translation failed.');
+    await chrome.storage.local.set({ [`tl2Status:${tabId}`]: errorMessage });
     updateState(tabId, { tl2Translating: false });
     chrome.storage.local.remove(`tl2Translating:${tabId}`);
-    chrome.runtime.sendMessage({ type: 'translation:update', tabId, text: '' }).catch(() => {});
+    chrome.runtime.sendMessage({ type: 'translation:update', tabId, text: '', error: errorMessage }).catch(() => {});
   } finally {
-    translateControllers.delete(tabId);
+    clearTimeout(timeoutId);
+    if (translateControllers.get(tabId) === controller) {
+      translateControllers.delete(tabId);
+      chrome.storage.local.remove(`tl2Translating:${tabId}`);
+      chrome.runtime.sendMessage({ type: 'tl2:translating', tabId, value: false }).catch(() => {});
+    }
   }
 }
 
@@ -576,22 +656,26 @@ async function autoTranslateIfEnabled(tabId, originalText) {
 
 async function cropVisibleCapture(dataUrl, region) {
   const imageBitmap = await createImageBitmap(await dataUrlToBlob(dataUrl));
-  const scaleX = imageBitmap.width / region.viewportWidth;
-  const scaleY = imageBitmap.height / region.viewportHeight;
-  const cropX = Math.max(0, Math.round(region.x * scaleX));
-  const cropY = Math.max(0, Math.round(region.y * scaleY));
-  const cropWidth = Math.min(imageBitmap.width - cropX, Math.round(region.width * scaleX));
-  const cropHeight = Math.min(imageBitmap.height - cropY, Math.round(region.height * scaleY));
+  try {
+    const scaleX = imageBitmap.width / region.viewportWidth;
+    const scaleY = imageBitmap.height / region.viewportHeight;
+    const cropX = Math.max(0, Math.round(region.x * scaleX));
+    const cropY = Math.max(0, Math.round(region.y * scaleY));
+    const cropWidth = Math.min(imageBitmap.width - cropX, Math.round(region.width * scaleX));
+    const cropHeight = Math.min(imageBitmap.height - cropY, Math.round(region.height * scaleY));
 
-  if (cropWidth <= 0 || cropHeight <= 0) {
-    throw new Error('Crop region outside viewport.');
+    if (cropWidth <= 0 || cropHeight <= 0) {
+      throw new Error('Crop region outside viewport.');
+    }
+
+    const canvas = new OffscreenCanvas(cropWidth, cropHeight);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Unable to create crop canvas context.');
+    ctx.drawImage(imageBitmap, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+    return canvas.convertToBlob({ type: 'image/png' });
+  } finally {
+    imageBitmap.close();
   }
-
-  const canvas = new OffscreenCanvas(cropWidth, cropHeight);
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(imageBitmap, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
-  imageBitmap.close();
-  return canvas.convertToBlob({ type: 'image/png' });
 }
 
 // ── OCR call ───────────────────────────────────────────────────
@@ -601,7 +685,7 @@ async function postImageForOcr(blob, pageNumber) {
   formData.append('image', blob, `page-${String(pageNumber).padStart(4, '0')}.png`);
 
   const url = await getBackendEndpoint('/ocr');
-  const response = await fetch(url, { method: 'POST', body: formData });
+  const response = await fetchWithTimeout(url, { method: 'POST', body: formData });
 
   if (!response.ok) {
     throw new Error(`OCR HTTP ${response.status}: ${await response.text().catch(() => '')}`);
@@ -609,7 +693,9 @@ async function postImageForOcr(blob, pageNumber) {
 
   const ct = response.headers.get('content-type') || '';
   if (ct.includes('application/json')) {
-    const payload = await response.json();
+    const payload = await response.json().catch(() => {
+      throw new Error('OCR backend returned invalid JSON.');
+    });
     const t = payload.text ?? payload.result ?? payload.content ?? '';
     if (payload.error) throw new Error(`OCR backend error: ${payload.error}`);
     return String(t).trim();
@@ -619,7 +705,7 @@ async function postImageForOcr(blob, pageNumber) {
 
 async function postTextForDedup(text) {
   const url = await getBackendEndpoint('/dedup');
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text })
@@ -629,7 +715,9 @@ async function postTextForDedup(text) {
     throw new Error(`Dedup HTTP ${response.status}: ${await response.text().catch(() => '')}`);
   }
 
-  const payload = await response.json();
+  const payload = await response.json().catch(() => {
+    throw new Error('Dedup backend returned invalid JSON.');
+  });
   if (payload.error) throw new Error(`Dedup backend error: ${payload.error}`);
   return String(payload.text ?? '').trim();
 }
@@ -700,8 +788,25 @@ function normalizeRegion(r) {
   };
 }
 
+function isValidRegion(r) {
+  return r && Number.isFinite(+r.x) && Number.isFinite(+r.y)
+    && Number.isFinite(+r.width) && Number.isFinite(+r.height)
+    && Number.isFinite(+r.viewportWidth) && Number.isFinite(+r.viewportHeight)
+    && +r.width > 0 && +r.height > 0 && +r.viewportWidth > 0 && +r.viewportHeight > 0;
+}
+
 async function dataUrlToBlob(dataUrl) {
   return fetch(dataUrl).then((r) => r.blob());
+}
+
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), BACKEND_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function sleep(ms) {

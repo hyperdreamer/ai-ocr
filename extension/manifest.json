@@ -15,6 +15,8 @@
   ],
   "host_permissions": [
     "http://localhost:*/*",
+    "http://127.0.0.1:*/*",
+    "http://[::1]:*/*",
     "https://localhost:*/*"
   ],
   "icons": {
@@ -37,19 +39,5 @@
       },
       "description": "Select a region and start OCR capture"
     }
-  },
-  "content_scripts": [
-    {
-      "matches": [
-        "<all_urls>"
-      ],
-      "js": [
-        "content.js"
-      ],
-      "css": [
-        "overlay.css"
-      ],
-      "run_at": "document_idle"
-    }
-  ]
+  }
 }
