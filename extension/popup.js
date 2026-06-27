@@ -309,6 +309,9 @@ async function refreshState() {
 
 async function startCapture() {
   userEditedResult = false;
+  resultEl.value = '';
+  copyButton.disabled = true;
+  downloadButton.disabled = true;
   startButton.disabled = true;
   progressEl.textContent = 'Starting region selection.';
   try {
@@ -357,7 +360,7 @@ function renderState(state) {
   fragmentsEl.textContent = String(latestState.fragmentsCollected || 0);
   shortProgressEl.textContent = latestState.progress || 'Ready';
   progressEl.textContent = latestState.error || latestState.progress || 'Ready';
-  if (mergedText && !userEditedResult) resultEl.value = mergedText;
+  if (!userEditedResult) resultEl.value = mergedText;
 
   startButton.disabled = isActive;
   stopButton.classList.toggle('hidden', !isActive);
