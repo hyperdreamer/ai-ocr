@@ -700,7 +700,7 @@ async function postImageForOcr(blob, pageNumber) {
 
 async function postTextForDedup(text) {
   const url = await getBackendEndpoint('/dedup');
-  const response = await fetchWithTimeout(url, {
+  const response = await fetchWithTimeout(url + '?_=' + Date.now(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text })

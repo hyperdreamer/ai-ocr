@@ -645,20 +645,27 @@ async def ocr(image: UploadFile | None = File(default=None)) -> OCRResponse:
     return await transcribe_image(config.ai, data_url)
 
 
-@app.post("/dedup", response_model=OCRResponse)
-async def dedup(request: DedupRequest) -> OCRResponse:
+@app.post("/dedup", response_model=None)
+async def dedup(request: DedupRequest) -> Response:
     """Accept merged OCR text and return deduplicated text from the configured AI model."""
 
     try:
         config = load_config()
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return JSONResponse(status_code=500, content=_error_payload(str(exc)))
 
     if config.ai is None:
-        raise HTTPException(status_code=500, detail="AI provider configuration is missing")
+        return JSONResponse(status_code=500, content=_error_payload("AI provider configuration is missing"))
 
     _validate_text_size(request.text, config)
-    return await deduplicate_text(config.ai, request.text)
+    result = await deduplicate_text(config.ai, request.text)
+    body = {"text": result.text, "model": result.model, "tokens_used": result.tokens_used}
+    body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    return Response(
+        content=body_bytes,
+        media_type="application/json",
+        headers={"Connection": "close"},
+    )
 
 
 @app.post("/translate", response_model=None)
