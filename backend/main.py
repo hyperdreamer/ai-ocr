@@ -720,9 +720,10 @@ async def save_text(request: SaveRequest) -> dict[str, str | bool]:
     candidate = Path(raw_path).expanduser()
     path = candidate if candidate.is_absolute() else save_root_expanded / candidate
 
-    # Guard: check against expanded (pre-symlink) root so symlinks through ~ are allowed
+    # Guard: collapse .. (prevents traversal) without resolving symlinks (allows ~/Ramdisk)
+    clean = Path(os.path.normpath(str(path)))
     try:
-        path.relative_to(save_root_expanded)
+        clean.relative_to(save_root_expanded)
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
