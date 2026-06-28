@@ -95,7 +95,6 @@ chrome.commands.onCommand.addListener(async (command) => {
     }
     await ensureContentScript(tab.id);
 
-    resetState(tab.id);
     updateState(tab.id, { active: true, status: 'Selecting', progress: 'Drag a rectangle.' });
     await chrome.tabs.sendMessage(tab.id, {
       type: 'selection:start',
@@ -186,7 +185,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handlePopupStart() {
   const tab = await getActiveTab();
   await ensureContentScript(tab.id);
-  resetState(tab.id);
   updateState(tab.id, { active: true, status: 'Selecting', progress: 'Drag a rectangle.' });
   await chrome.tabs.sendMessage(tab.id, {
     type: 'selection:start',
