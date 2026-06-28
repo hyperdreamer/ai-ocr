@@ -220,8 +220,9 @@ async function handleStop() {
   const tab = await getActiveTab();
   const state = getState(tab.id);
   state.stopRequested = true;
-  // Abort in-flight OCR so Stop responds immediately
+  // Abort in-flight OCR AND translation so Stop responds immediately
   captureControllers.get(tab.id)?.abort();
+  handleTranslateStop(tab.id);
   // If in error state (waiting for retry), finalize collected fragments now
   if (state.status === 'Error' && state.fragments?.length > 0) {
     await finalizePostCapture(tab.id, mergeFragments(state.fragments), state.fragments);
@@ -468,11 +469,16 @@ async function runCaptureLoop(tab, region) {
     }
 
     const mergedText = mergeFragments(fragments);
-    updateState(tabId, {
-      progress: 'Deduplicating merged text...',
-      fragments
-    });
-    await finalizePostCapture(tabId, mergedText, fragments);
+    if (state.stopRequested) {
+      // User stopped — skip dedup/translate, finalize raw text immediately
+      await finalizeCapture(tabId, mergedText, fragments);
+    } else {
+      updateState(tabId, {
+        progress: 'Deduplicating merged text...',
+        fragments
+      });
+      await finalizePostCapture(tabId, mergedText, fragments);
+    }
   } finally {
     state.captureInFlight = false;
     captureControllers.delete(tabId);
@@ -556,8 +562,12 @@ async function resumeCaptureLoop(rs) {
     }
 
     const mergedText = mergeFragments(fragments);
-    updateState(tabId, { progress: 'Deduplicating merged text...', fragments });
-    await finalizePostCapture(tabId, mergedText, fragments);
+    if (state.stopRequested) {
+      await finalizeCapture(tabId, mergedText, fragments);
+    } else {
+      updateState(tabId, { progress: 'Deduplicating merged text...', fragments });
+      await finalizePostCapture(tabId, mergedText, fragments);
+    }
   } finally {
     state.captureInFlight = false;
     captureControllers.delete(tabId);
@@ -605,8 +615,10 @@ async function finalizeCapture(tabId, finalText, fragments) {
   });
   chrome.storage.local.set({ [`lastResult:${tabId}`]: finalText });
 
-  // Auto-translate to Translation tab if enabled
-  await autoTranslateIfEnabled(tabId, finalText);
+  // Auto-translate to Translation tab if enabled (skip if user stopped)
+  if (!state.stopRequested) {
+    await autoTranslateIfEnabled(tabId, finalText);
+  }
 
   return finalText;
 }
