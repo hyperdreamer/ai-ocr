@@ -150,8 +150,8 @@ async function init() {
   const resultKey = currentTabId ? `lastResult:${currentTabId}` : null;
   // Get live state first so renderState has the right mergedText
   await refreshState();
-  // Fallback: if textarea is still empty, load from storage
-  if (!resultEl.value && resultKey) {
+  // Always restore from storage if textarea is empty — survives popup close + SW restart
+  if (!resultEl.value.trim() && resultKey) {
     const stored = await chrome.storage.local.get(resultKey);
     if (stored[resultKey]) resultEl.value = stored[resultKey];
   }
