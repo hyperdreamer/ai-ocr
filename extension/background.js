@@ -244,9 +244,10 @@ async function handleRetry() {
     return { ok: true, result };
   }
 
-  const rs = state.retryState;
+  const rs = state.retryState || await loadRetryState(tab.id);
   if (!rs) throw new Error('No retry state saved.');
   state.retryState = null;
+  chrome.storage.local.remove(`retryState:${tab.id}`).catch(() => {});
   updateState(tab.id, { active: true, status: 'Capturing', progress: 'Retrying...', error: '' });
   await resumeCaptureLoop(rs);
   return { ok: true };
@@ -419,6 +420,7 @@ async function runCaptureLoop(tab, region) {
     } catch (e) {
       // Save retry state so user can resume
       state.retryState = { tab, region: normalizedRegion, winId, fragments, lastScrollY };
+      chrome.storage.local.set({ [`retryState:${tabId}`]: state.retryState }).catch(() => {});
       updateState(tabId, {
         active: true,
         status: 'Error',
@@ -495,6 +497,7 @@ async function resumeCaptureLoop(rs) {
       fragments.push(text);
     } catch (e) {
       state.retryState = { tab, region, winId, fragments, lastScrollY: scrollY };
+      chrome.storage.local.set({ [`retryState:${tabId}`]: state.retryState }).catch(() => {});
       updateState(tabId, {
         active: true,
         status: 'Error',
@@ -899,4 +902,10 @@ async function autoSaveIfEnabled(text) {
       priority: 1
     });
   }
+}
+
+async function loadRetryState(tabId) {
+  const key = `retryState:${tabId}`;
+  const stored = await chrome.storage.local.get(key);
+  return stored[key] || null;
 }
