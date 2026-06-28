@@ -310,6 +310,10 @@ async def _call_with_retry(
     per-phase httpx timeouts fire first in normal cases.  If the proxy
     or network silently drops the connection, the hard deadline ensures
     the backend always returns a response instead of hanging forever.
+
+    Only retries on connect errors (connection never established) to
+    avoid sending the same image/text twice when the request body
+    already reached the provider but the response was dropped.
     """
     deadline = config.timeout.read + 60
 
@@ -322,11 +326,17 @@ async def _call_with_retry(
                 status_code=504,
                 detail=f"{provider_name} API did not respond within {deadline}s",
             )
-        except (httpx.RequestError) as exc:
+        except httpx.ConnectError as exc:
             last_exc = HTTPException(
                 status_code=502,
-                detail=f"{provider_name} API request failed: {type(exc).__name__}: {exc}",
+                detail=f"{provider_name} API connection failed: {exc}",
             )
+        except (httpx.RequestError) as exc:
+            # Read/Write errors — do NOT retry, body may have been sent already
+            raise HTTPException(
+                status_code=502,
+                detail=f"{provider_name} API request failed: {type(exc).__name__}: {exc}",
+            ) from exc
         if attempt == 1:
             await asyncio.sleep(1)
 
