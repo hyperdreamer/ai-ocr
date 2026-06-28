@@ -196,13 +196,23 @@ def load_config() -> AppConfig:
     model = str(ai_section.get("model", "gpt-4.1-mini"))
 
     def _parse_override(section: Any) -> ProviderOverride | None:
-        """Parse an optional nested ``ocr`` / ``text`` config section."""
+        """Parse an optional nested ``ocr`` / ``text`` config section.
+
+        API keys are resolved eagerly here so that ``api_key_env``,
+        ``$ENV_VAR`` references, and provider-specific fallbacks all
+        work correctly.  The resolved config stores the actual key.
+        """
         if not isinstance(section, dict):
             return None
+        has_key = bool(section.get("api_key") or section.get("api_key_env"))
+        effective_provider = str(section.get("provider", "") or provider)
+        api_key = (
+            _read_api_key(section, effective_provider) if has_key else ""
+        )
         return ProviderOverride(
             provider=str(section.get("provider", "")).lower() or "",
             api_base=str(section.get("api_base", "")).rstrip("/") or "",
-            api_key=str(section.get("api_key", "") or section.get("api_key_env", "")) or "",
+            api_key=api_key,
             model=str(section.get("model", "")) or "",
         )
 
@@ -258,11 +268,9 @@ def _resolve_ai_config(base: AIConfig, override: ProviderOverride | None) -> AIC
     api_base = override.api_base or base.api_base
     model = override.model or base.model
 
-    # Resolve API key for the effective provider
-    if override.api_key:
-        api_key = _read_api_key({"api_key": override.api_key}, provider)
-    else:
-        api_key = base.api_key
+    # API key was already resolved eagerly in _parse_override.
+    # If the override provided a key, use it; otherwise inherit.
+    api_key = override.api_key or base.api_key
 
     return AIConfig(
         provider=provider,
@@ -402,7 +410,6 @@ async def _call_with_retry(
 async def _post_openai_chat_completion(
     config: AIConfig,
     messages: list[dict[str, Any]],
-    model_override: str | None = None,
 ) -> OCRResponse:
     """Send messages to an OpenAI-compatible /v1/chat/completions API."""
 
@@ -412,9 +419,8 @@ async def _post_openai_chat_completion(
             detail="No API key configured. Set ai.api_key in config.yaml or the OCR_API_KEY environment variable.",
         )
 
-    effective_model = model_override or config.model
     request_body = {
-        "model": effective_model,
+        "model": config.model,
         "messages": messages,
     }
     headers = {"Authorization": f"Bearer {config.api_key}"}
@@ -452,7 +458,7 @@ async def _post_openai_chat_completion(
     )
 
 
-async def _call_openai(config: AIConfig, data_url: str, model_override: str | None = None) -> OCRResponse:
+async def _call_openai(config: AIConfig, data_url: str) -> OCRResponse:
     """Send the image to an OpenAI-compatible /v1/chat/completions API."""
 
     return await _post_openai_chat_completion(
@@ -466,7 +472,6 @@ async def _call_openai(config: AIConfig, data_url: str, model_override: str | No
                 ],
             }
         ],
-        model_override=model_override,
     )
 
 
@@ -481,7 +486,6 @@ def _anthropic_image_source(data_url: str) -> dict[str, str]:
 async def _post_anthropic_message(
     config: AIConfig,
     messages: list[dict[str, Any]],
-    model_override: str | None = None,
 ) -> OCRResponse:
     """Send messages to Anthropic's /v1/messages API."""
 
@@ -491,9 +495,8 @@ async def _post_anthropic_message(
             detail="No API key configured. Set ai.api_key in config.yaml or the OCR_API_KEY environment variable.",
         )
 
-    effective_model = model_override or config.model
     request_body = {
-        "model": effective_model,
+        "model": config.model,
         "max_tokens": 4096,
         "messages": messages,
     }
@@ -553,7 +556,7 @@ def _decode_provider_json(response: httpx.Response, provider_name: str) -> dict[
     return payload
 
 
-async def _call_anthropic(config: AIConfig, data_url: str, model_override: str | None = None) -> OCRResponse:
+async def _call_anthropic(config: AIConfig, data_url: str) -> OCRResponse:
     """Send the image to Anthropic's /v1/messages API."""
 
     return await _post_anthropic_message(
@@ -567,7 +570,6 @@ async def _call_anthropic(config: AIConfig, data_url: str, model_override: str |
                 ],
             }
         ],
-        model_override=model_override,
     )
 
 
@@ -720,8 +722,11 @@ async def dedup(request: DedupRequest) -> Response:
 
     _validate_text_size(request.text, config)
     # Debug: always save pre-dedup text for retry troubleshooting
-    _DEBUG_DEDUP_PATH = Path("/tmp/dedup_last.txt")
-    _DEBUG_DEDUP_PATH.write_text(request.text, encoding="utf-8")
+    try:
+        _DEBUG_DEDUP_PATH = Path("/tmp/dedup_last.txt")
+        _DEBUG_DEDUP_PATH.write_text(request.text, encoding="utf-8")
+    except OSError:
+        pass
     result = await deduplicate_text(config.ai, request.text)
     body = {"text": result.text, "model": result.model, "tokens_used": result.tokens_used}
     body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
