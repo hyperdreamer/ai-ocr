@@ -114,7 +114,18 @@ class AppConfig:
     save_root: Path = Path(DEFAULT_SAVE_ROOT)
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
     max_text_chars: int = DEFAULT_MAX_TEXT_CHARS
+    debug: bool = False
     ai: AIConfig | None = None
+
+
+def _debug(tag: str, msg: str, *, enabled: bool = False) -> None:
+    """Print a timestamped debug message when *enabled* is True."""
+    if not enabled:
+        return
+    import sys
+    from datetime import datetime, timezone
+    ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    print(f"[DEBUG][{tag}] {ts} {msg}", file=sys.stderr, flush=True)
 
 
 def _load_yaml_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
@@ -242,6 +253,7 @@ def load_config() -> AppConfig:
         save_root=Path(str(raw_config.get("save_root", DEFAULT_SAVE_ROOT))).expanduser(),
         max_upload_bytes=int(raw_config.get("max_upload_bytes", DEFAULT_MAX_UPLOAD_BYTES)),
         max_text_chars=int(raw_config.get("max_text_chars", DEFAULT_MAX_TEXT_CHARS)),
+        debug=bool(raw_config.get("debug", False)),
         ai=AIConfig(
             provider=provider,
             api_base=api_base,
@@ -448,10 +460,8 @@ async def _post_openai_chat_completion(
 
     response = await _call_with_retry(config, _do_request, "OpenAI")
     # Parse response body (covered by asyncio deadline + httpx read timeout)
-    print(f"[dedup] AI HTTP {response.status_code}, reading body...", flush=True)
     payload = _decode_provider_json(response, "OpenAI")
     _text = _extract_openai_text(payload)
-    print(f"[dedup] AI text extracted: {len(_text)} chars", flush=True)
     usage = payload.get("usage") or {}
     return OCRResponse(
         text=_text,
@@ -706,8 +716,12 @@ async def ocr(image: UploadFile | None = File(default=None)) -> OCRResponse:
         raise HTTPException(status_code=500, detail="AI provider configuration is missing")
 
     image_bytes = await _read_limited_upload(image, config.max_upload_bytes)
+    _debug("ocr", f"request: {len(image_bytes)} bytes", enabled=config.debug)
     data_url = _image_to_data_url(image_bytes, image.content_type)
-    return await transcribe_image(config.ai, data_url)
+    _debug("ocr", f"calling provider={config.ai.provider} model={config.ai.model} ocr_model={config.ai.ocr.model if config.ai.ocr else '-'}", enabled=config.debug)
+    result = await transcribe_image(config.ai, data_url)
+    _debug("ocr", f"response: {len(result.text)} chars model={result.model}", enabled=config.debug)
+    return result
 
 
 @app.post("/dedup", response_model=None)
@@ -723,19 +737,19 @@ async def dedup(request: DedupRequest) -> Response:
         return JSONResponse(status_code=500, content=_error_payload("AI provider configuration is missing"))
 
     _validate_text_size(request.text, config)
+    _debug("dedup", f"request: {len(request.text)} chars", enabled=config.debug)
     # Debug: always save pre-dedup text for retry troubleshooting
     try:
         _DEBUG_DEDUP_PATH = Path("/tmp/dedup_last.txt")
         _DEBUG_DEDUP_PATH.write_text(request.text, encoding="utf-8")
     except OSError:
         pass
-    import sys
-    print("[dedup] calling AI provider...", flush=True)
+    _debug("dedup", "calling provider...", enabled=config.debug)
     result = await deduplicate_text(config.ai, request.text)
-    print(f"[dedup] AI returned {len(result.text)} chars", flush=True)
+    _debug("dedup", f"AI returned {len(result.text)} chars model={result.model}", enabled=config.debug)
     body = {"text": result.text, "model": result.model, "tokens_used": result.tokens_used}
     body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    print(f"[dedup] sending {len(body_bytes)} byte response", flush=True)
+    _debug("dedup", f"sending {len(body_bytes)} byte response", enabled=config.debug)
     return Response(
         content=body_bytes,
         media_type="application/json",
@@ -756,9 +770,13 @@ async def translate(request: TranslateRequest) -> Response:
         return JSONResponse(status_code=500, content=_error_payload("AI provider configuration is missing"))
 
     _validate_text_size(request.text, config)
+    _debug("translate", f"request: {len(request.text)} chars lang={request.language}", enabled=config.debug)
+    _debug("translate", "calling provider...", enabled=config.debug)
     result = await translate_text(config.ai, request.text, request.language, request.prompt)
+    _debug("translate", f"AI returned {len(result.text)} chars model={result.model}", enabled=config.debug)
     body = {"text": result.text, "model": result.model, "tokens_used": result.tokens_used}
     body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    _debug("translate", f"sending {len(body_bytes)} byte response", enabled=config.debug)
     return Response(
         content=body_bytes,
         media_type="application/json",
