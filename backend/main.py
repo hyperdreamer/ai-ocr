@@ -668,6 +668,9 @@ async def dedup(request: DedupRequest) -> Response:
         return JSONResponse(status_code=500, content=_error_payload("AI provider configuration is missing"))
 
     _validate_text_size(request.text, config)
+    # Debug: always save pre-dedup text for retry troubleshooting
+    _DEBUG_DEDUP_PATH = Path("/tmp/dedup_last.txt")
+    _DEBUG_DEDUP_PATH.write_text(request.text, encoding="utf-8")
     result = await deduplicate_text(config.ai, request.text)
     body = {"text": result.text, "model": result.model, "tokens_used": result.tokens_used}
     body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
