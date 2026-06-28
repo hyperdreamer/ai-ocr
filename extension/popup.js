@@ -380,6 +380,10 @@ function renderState(state) {
     tl2Result.value = '';
     tl2Copy.disabled = tl2Save.disabled = tl2Download.disabled = true;
     setTl2Progress('Ready');
+    // Clear stale auto-translate data from storage
+    if (currentTabId) {
+      chrome.storage.local.remove([`tl2Result:${currentTabId}`, `tl2Status:${currentTabId}`]).catch(() => {});
+    }
   }
 
   startButton.disabled = isActive;

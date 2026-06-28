@@ -927,7 +927,9 @@ function resetState(tabId) {
   chrome.storage.local.remove([
     `lastResult:${tabId}`,
     `lastStatus:${tabId}`,
-    `retryState:${tabId}`
+    `retryState:${tabId}`,
+    `tl2Result:${tabId}`,
+    `tl2Status:${tabId}`
   ]).catch(() => {});
 }
 
