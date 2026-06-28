@@ -434,22 +434,24 @@ async def _post_openai_chat_completion(
                 pool=config.timeout.pool,
             )
         ) as client:
-            return await client.post(
+            response = await client.post(
                 f"{config.api_base}/v1/chat/completions",
                 headers=headers,
                 json=request_body,
             )
+            if response.is_error:
+                detail = response.text
+                if len(detail) > 500:
+                    detail = detail[:500] + "..."
+                raise HTTPException(status_code=502, detail=f"OpenAI API failed: {detail}")
+            return response
 
     response = await _call_with_retry(config, _do_request, "OpenAI")
-
-    if response.is_error:
-        detail = response.text
-        if len(detail) > 500:
-            detail = detail[:500] + "..."
-        raise HTTPException(status_code=502, detail=f"OpenAI API failed: {detail}")
-
+    # Parse response body (covered by asyncio deadline + httpx read timeout)
+    print(f"[dedup] AI HTTP {response.status_code}, reading body...", flush=True)
     payload = _decode_provider_json(response, "OpenAI")
     _text = _extract_openai_text(payload)
+    print(f"[dedup] AI text extracted: {len(_text)} chars", flush=True)
     usage = payload.get("usage") or {}
     return OCRResponse(
         text=_text,
@@ -727,9 +729,13 @@ async def dedup(request: DedupRequest) -> Response:
         _DEBUG_DEDUP_PATH.write_text(request.text, encoding="utf-8")
     except OSError:
         pass
+    import sys
+    print("[dedup] calling AI provider...", flush=True)
     result = await deduplicate_text(config.ai, request.text)
+    print(f"[dedup] AI returned {len(result.text)} chars", flush=True)
     body = {"text": result.text, "model": result.model, "tokens_used": result.tokens_used}
     body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    print(f"[dedup] sending {len(body_bytes)} byte response", flush=True)
     return Response(
         content=body_bytes,
         media_type="application/json",
