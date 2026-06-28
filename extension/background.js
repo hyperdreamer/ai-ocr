@@ -451,6 +451,7 @@ async function runCaptureLoop(tab, region) {
           progress: `Failed on page ${pageNumber}. Click Retry to continue.`,
           fragmentsCollected: fragments.length
         });
+        chrome.storage.local.set({ [`lastStatus:${tabId}`]: 'Error' }).catch(() => {});
         return;
       }
 
@@ -556,6 +557,7 @@ async function resumeCaptureLoop(rs) {
           progress: `Failed on page ${pageNumber}. Click Retry to continue.`,
           fragmentsCollected: fragments.length
         });
+        chrome.storage.local.set({ [`lastStatus:${tabId}`]: 'Error' }).catch(() => {});
         return;
       }
 
@@ -634,6 +636,7 @@ async function finalizeCapture(tabId, finalText, fragments) {
     mergedText: finalText
   });
   chrome.storage.local.set({ [`lastResult:${tabId}`]: finalText });
+  chrome.storage.local.set({ [`lastStatus:${tabId}`]: 'Done' });
 
   // Auto-translate to Translation tab if enabled (skip if user stopped)
   if (!state.stopRequested) {

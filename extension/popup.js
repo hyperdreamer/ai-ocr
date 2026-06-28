@@ -45,6 +45,7 @@ const panels = {
 let latestState = null;
 let currentTabId = null;
 let userEditedResult = false;
+let lastStoredStatus = '';
 const LOCAL_BACKEND_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 // ── Tab switching ─────────────────────────────────────────────
@@ -156,6 +157,13 @@ async function init() {
     // refreshState may have populated it via renderState; if still empty, retry
     const fb = await chrome.storage.local.get(resultKey);
     if (fb[resultKey]) resultEl.value = fb[resultKey];
+  }
+
+  // Load last persisted status for status bar
+  const statusKey = currentTabId ? `lastStatus:${currentTabId}` : null;
+  if (statusKey) {
+    const { [statusKey]: storedStatus } = await chrome.storage.local.get(statusKey);
+    if (storedStatus) lastStoredStatus = storedStatus;
   }
 
   // Load translate language and prompt
@@ -358,7 +366,9 @@ function renderState(state) {
   const isError = latestState.status === 'Error';
   const canRetry = (isError && latestState.active && latestState.retryState) || !!latestState.retryStage;
 
-  statusEl.textContent = latestState.status || 'Idle';
+  statusEl.textContent = latestState.status === 'Idle' && lastStoredStatus
+    ? lastStoredStatus
+    : (latestState.status || 'Idle');
   currentPageEl.textContent = String(latestState.currentPage || 0);
   fragmentsEl.textContent = String(latestState.fragmentsCollected || 0);
   shortProgressEl.textContent = latestState.progress || 'Ready';
@@ -368,6 +378,7 @@ function renderState(state) {
   // Clear translation result when a new capture starts
   if (latestState.status === 'Selecting') {
     userEditedResult = false;  // reset for keyboard-shortcut path
+    lastStoredStatus = '';
     resultEl.value = '';
     tl2Result.value = '';
     tl2Copy.disabled = tl2Save.disabled = tl2Download.disabled = true;
