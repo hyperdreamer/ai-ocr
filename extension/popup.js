@@ -367,6 +367,8 @@ function renderState(state) {
 
   // Clear translation result when a new capture starts
   if (latestState.status === 'Selecting') {
+    userEditedResult = false;  // reset for keyboard-shortcut path
+    resultEl.value = '';
     tl2Result.value = '';
     tl2Copy.disabled = tl2Save.disabled = tl2Download.disabled = true;
     setTl2Progress('Ready');

@@ -873,6 +873,8 @@ function resetState(tabId) {
     pendingText: ''
   });
   broadcastState(tabId);
+  // Clear stale stored result so popup init() doesn't reload old capture
+  chrome.storage.local.remove(`lastResult:${tabId}`).catch(() => {});
 }
 
 async function copyToClipboard(text) {
