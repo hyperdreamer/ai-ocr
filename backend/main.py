@@ -322,7 +322,7 @@ async def _call_with_retry(
         try:
             return await asyncio.wait_for(make_request(), timeout=deadline)
         except asyncio.TimeoutError:
-            last_exc = HTTPException(
+            raise HTTPException(
                 status_code=504,
                 detail=f"{provider_name} API did not respond within {deadline}s",
             )
