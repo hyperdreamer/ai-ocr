@@ -74,12 +74,26 @@ class TimeoutConfig:
 
 
 @dataclass(frozen=True)
+class ProviderOverride:
+    """Per-task provider/model override.  Empty fields inherit from the parent AIConfig.
+
+    When a field is left empty (the default), the parent ``AIConfig`` value is used.
+    This lets you override just the model while keeping the same provider, or switch
+    to a completely different provider+key for a specific task.
+    """
+
+    provider: str = ""
+    api_base: str = ""
+    api_key: str = ""
+    model: str = ""
+
+
+@dataclass(frozen=True)
 class AIConfig:
     """Settings needed to call a configured AI provider.
 
-    ``model`` is the fallback used when a per-task model is not configured.
-    ``ocr_model`` overrides ``model`` for vision (OCR) requests.
-    ``text_model`` overrides ``model`` for text processing (dedup + translate).
+    ``model`` is the fallback used when a per-task override does not specify one.
+    ``ocr`` and ``text`` are optional per-task :class:`ProviderOverride` sections.
     """
 
     provider: str
@@ -87,8 +101,8 @@ class AIConfig:
     api_key: str
     model: str
     timeout: TimeoutConfig = TimeoutConfig()
-    ocr_model: str = ""
-    text_model: str = ""
+    ocr: ProviderOverride | None = None
+    text: ProviderOverride | None = None
 
 
 @dataclass(frozen=True)
@@ -180,8 +194,20 @@ def load_config() -> AppConfig:
     provider = str(ai_section.get("provider", "openai")).lower()
     api_base = str(ai_section.get("api_base", "https://api.openai.com")).rstrip("/")
     model = str(ai_section.get("model", "gpt-4.1-mini"))
-    ocr_model = str(ai_section.get("ocr_model", ""))
-    text_model = str(ai_section.get("text_model", ""))
+
+    def _parse_override(section: Any) -> ProviderOverride | None:
+        """Parse an optional nested ``ocr`` / ``text`` config section."""
+        if not isinstance(section, dict):
+            return None
+        return ProviderOverride(
+            provider=str(section.get("provider", "")).lower() or "",
+            api_base=str(section.get("api_base", "")).rstrip("/") or "",
+            api_key=str(section.get("api_key", "") or section.get("api_key_env", "")) or "",
+            model=str(section.get("model", "")) or "",
+        )
+
+    ocr_override = _parse_override(ai_section.get("ocr"))
+    text_override = _parse_override(ai_section.get("text"))
 
     # Optional timeout overrides
     timeout_raw = ai_section.get("timeout")
@@ -212,9 +238,38 @@ def load_config() -> AppConfig:
             api_key=api_key,
             model=model,
             timeout=timeout,
-            ocr_model=ocr_model,
-            text_model=text_model,
+            ocr=ocr_override,
+            text=text_override,
         ),
+    )
+
+
+def _resolve_ai_config(base: AIConfig, override: ProviderOverride | None) -> AIConfig:
+    """Merge a per-task ``ProviderOverride`` into the base ``AIConfig``.
+
+    Every field that is empty in *override* falls back to *base*.
+    API keys in *override* are resolved through ``_read_api_key`` so
+    ``$ENV_VAR`` references and provider-specific fallbacks work.
+    """
+    if override is None:
+        return base
+
+    provider = override.provider or base.provider
+    api_base = override.api_base or base.api_base
+    model = override.model or base.model
+
+    # Resolve API key for the effective provider
+    if override.api_key:
+        api_key = _read_api_key({"api_key": override.api_key}, provider)
+    else:
+        api_key = base.api_key
+
+    return AIConfig(
+        provider=provider,
+        api_base=api_base,
+        api_key=api_key,
+        model=model,
+        timeout=base.timeout,
     )
 
 
@@ -519,33 +574,32 @@ async def _call_anthropic(config: AIConfig, data_url: str, model_override: str |
 async def transcribe_image(config: AIConfig, data_url: str) -> OCRResponse:
     """Route an OCR request to the configured provider."""
 
-    ocr_model = config.ocr_model or None  # None → use config.model fallback
+    cfg = _resolve_ai_config(config, config.ocr)
 
-    if config.provider == "openai":
-        return await _call_openai(config, data_url, model_override=ocr_model)
-    if config.provider == "anthropic":
-        return await _call_anthropic(config, data_url, model_override=ocr_model)
+    if cfg.provider == "openai":
+        return await _call_openai(cfg, data_url)
+    if cfg.provider == "anthropic":
+        return await _call_anthropic(cfg, data_url)
 
-    raise HTTPException(status_code=400, detail=f"Unsupported AI provider: {config.provider}")
+    raise HTTPException(status_code=400, detail=f"Unsupported AI provider: {cfg.provider}")
 
 
 async def deduplicate_text(config: AIConfig, text: str) -> OCRResponse:
     """Route a deduplication request to the configured provider."""
 
-    text_model = config.text_model or None  # None → use config.model fallback
+    cfg = _resolve_ai_config(config, config.text)
 
-    if config.provider == "openai":
+    if cfg.provider == "openai":
         return await _post_openai_chat_completion(
-            config,
+            cfg,
             [
                 {"role": "system", "content": DEDUP_PROMPT},
                 {"role": "user", "content": text},
             ],
-            model_override=text_model,
         )
-    if config.provider == "anthropic":
+    if cfg.provider == "anthropic":
         return await _post_anthropic_message(
-            config,
+            cfg,
             [
                 {
                     "role": "user",
@@ -555,30 +609,28 @@ async def deduplicate_text(config: AIConfig, text: str) -> OCRResponse:
                     ],
                 }
             ],
-            model_override=text_model,
         )
 
-    raise HTTPException(status_code=400, detail=f"Unsupported AI provider: {config.provider}")
+    raise HTTPException(status_code=400, detail=f"Unsupported AI provider: {cfg.provider}")
 
 
 async def translate_text(config: AIConfig, text: str, language: str, prompt: str | None = None) -> OCRResponse:
     """Route a translation request to the configured provider."""
 
     system_prompt = prompt or f"Translate the following text to {language}. Return only the translation."
-    text_model = config.text_model or None  # None → use config.model fallback
+    cfg = _resolve_ai_config(config, config.text)
 
-    if config.provider == "openai":
+    if cfg.provider == "openai":
         return await _post_openai_chat_completion(
-            config,
+            cfg,
             [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text},
             ],
-            model_override=text_model,
         )
-    if config.provider == "anthropic":
+    if cfg.provider == "anthropic":
         return await _post_anthropic_message(
-            config,
+            cfg,
             [
                 {
                     "role": "user",
@@ -588,10 +640,9 @@ async def translate_text(config: AIConfig, text: str, language: str, prompt: str
                     ],
                 }
             ],
-            model_override=text_model,
         )
 
-    raise HTTPException(status_code=400, detail=f"Unsupported AI provider: {config.provider}")
+    raise HTTPException(status_code=400, detail=f"Unsupported AI provider: {cfg.provider}")
 
 
 app = FastAPI(title="Qidian OCR Backend")

@@ -72,8 +72,13 @@ ai:
   model: "gpt-4.1-mini"
 
   # Optional per-task overrides:
-  # ocr_model: "gpt-4.1"
-  # text_model: "gpt-4.1-mini"
+  # ocr:
+  #   model: "gpt-4.1"
+  # text:
+  #   provider: "anthropic"
+  #   api_base: "https://api.anthropic.com"
+  #   api_key: "$ANTHROPIC_API_KEY"
+  #   model: "claude-sonnet-4-20250514"
 ```
 
 Supported `ai` fields:
@@ -84,8 +89,8 @@ Supported `ai` fields:
   - Anthropic-compatible providers must expose `/v1/messages`.
 - `api_key`: the API key. Plaintext values are used directly. Prefix with `$` to treat the value as an environment variable name (e.g. `$OCR_API_KEY`). `api_key_env` is also accepted.
 - `model`: the model name to send to the provider. This is the fallback model used for all operations unless per-task overrides are set.
-- `ocr_model` (optional): overrides `model` for vision (OCR) requests. Useful when you want a stronger vision model for OCR but a faster/cheaper model for text processing.
-- `text_model` (optional): overrides `model` for text processing (deduplication and translation).
+- `ocr` (optional): nested section to override provider/model for vision (OCR) requests. Fields: `provider`, `api_base`, `api_key`, `model`. Empty fields inherit from the parent `ai` section.
+- `text` (optional): nested section to override provider/model for text processing (deduplication and translation). Same fields as `ocr`.
 
 The backend also falls back to these environment variable names:
 
