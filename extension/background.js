@@ -138,14 +138,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     savedLastRegion = saved;
     states.forEach((state) => { state.lastRegion = saved; });
     broadcastState(tabId);
+    // Acknowledge immediately and let the background service worker own the
+    // long-running OCR → dedup → translate pipeline.  Keeping this message
+    // channel open until capture completes couples the pipeline lifetime to the
+    // sender context; if the popup/content context disappears, the backend
+    // connection can be aborted before uvicorn logs the /dedup 200.
+    sendResponse({ ok: true });
     runCaptureLoop(sender.tab, message.region)
-      .then(() => sendResponse({ ok: true }))
       .catch((error) => {
         console.error('Capture loop failed:', error);
         updateState(tabId, { active: false, status: 'Error', error: error.message, progress: 'Failed.' });
-        sendResponse({ ok: false, error: error.message });
       });
-    return true;
+    return false;
   }
   if (message?.type === 'popup:start-with-region') {
     handleReuseRegion().then((r) => sendResponse(r)).catch((e) => sendResponse({ ok: false, error: e.message }));
@@ -261,6 +265,20 @@ async function handleRetry() {
 
 const translateControllers = new Map();
 const captureControllers = new Map();
+let keepAliveIntervalId = null;
+
+function startKeepAlive() {
+  if (keepAliveIntervalId) return;
+  keepAliveIntervalId = setInterval(() => {
+    chrome.runtime.getPlatformInfo(() => {});
+  }, 20_000);
+}
+
+function stopKeepAlive() {
+  if (!keepAliveIntervalId) return;
+  clearInterval(keepAliveIntervalId);
+  keepAliveIntervalId = null;
+}
 
 async function handleTranslateStart(msg) {
   const { tabId, text, language, host, port } = msg;
@@ -400,9 +418,10 @@ async function runCaptureLoop(tab, region) {
     throw new Error('Selected region is too small.');
   }
 
-  // Set up abort controller so Stop can interrupt OCR
+  // Set up abort controller so Stop can interrupt OCR/dedup
   const controller = new AbortController();
   captureControllers.set(tabId, controller);
+  startKeepAlive();
 
   try {
     resetState(tabId);
@@ -495,6 +514,7 @@ async function runCaptureLoop(tab, region) {
   } finally {
     state.captureInFlight = false;
     captureControllers.delete(tabId);
+    if (captureControllers.size === 0 && translateControllers.size === 0) stopKeepAlive();
     // Unlock page scroll
     chrome.tabs.sendMessage(tab.id, { type: 'page:unlock-scroll' }).catch(() => {});
   }
@@ -607,10 +627,11 @@ async function resumeCaptureLoop(rs) {
 
 async function finalizePostCapture(tabId, mergedText, fragments) {
   const state = getState(tabId);
+  const signal = captureControllers.get(tabId)?.signal;
   let finalText;
   for (let attempt = 1; attempt <= 10; attempt++) {
     try {
-      finalText = await postTextForDedup(mergedText);
+      finalText = await postTextForDedup(mergedText, signal);
       break;
     } catch (e) {
       if (state.stopRequested) { finalText = null; break; }
@@ -795,13 +816,13 @@ async function postImageForOcr(blob, pageNumber, signal) {
   return (await response.text()).trim();
 }
 
-async function postTextForDedup(text) {
+async function postTextForDedup(text, signal) {
   const url = await getBackendEndpoint('/dedup');
   const response = await fetchWithTimeout(url + '?_=' + Date.now(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text })
-  });
+  }, signal);
 
   if (!response.ok) {
     throw new Error(`Dedup HTTP ${response.status}: ${await response.text().catch(() => '')}`);
