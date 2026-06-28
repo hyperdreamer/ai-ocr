@@ -54,7 +54,7 @@ function getState(tabId) {
       active: false, status: 'Idle', currentPage: 0, fragmentsCollected: 0,
       progress: 'Ready', mergedText: '', fragments: [], error: '',
       lastRegion: savedLastRegion, stopRequested: false, retryState: null,
-      retryStage: null, pendingText: ''
+      retryStage: null, pendingText: '', captureInFlight: false
     });
   }
   return states.get(tabId);
@@ -73,6 +73,8 @@ chrome.storage.local.get('lastRegion', (items) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   states.delete(tabId);
   handleTranslateStop(tabId);
+  captureControllers.get(tabId)?.abort();
+  captureControllers.delete(tabId);
   chrome.storage.local.remove([
     `lastResult:${tabId}`,
     `tl2Result:${tabId}`,
@@ -218,6 +220,8 @@ async function handleStop() {
   const tab = await getActiveTab();
   const state = getState(tab.id);
   state.stopRequested = true;
+  // Abort in-flight OCR so Stop responds immediately
+  captureControllers.get(tab.id)?.abort();
   // If in error state (waiting for retry), finalize collected fragments now
   if (state.status === 'Error' && state.fragments?.length > 0) {
     await finalizePostCapture(tab.id, mergeFragments(state.fragments), state.fragments);
@@ -256,6 +260,7 @@ async function handleRetry() {
 // ── manual translation (delegated to background so it survives popup close) ─
 
 const translateControllers = new Map();
+const captureControllers = new Map();
 
 async function handleTranslateStart(msg) {
   const { tabId, text, language, host, port } = msg;
@@ -386,81 +391,92 @@ async function runCaptureLoop(tab, region) {
   const tabId = tab.id;
   const state = getState(tabId);
 
+  // Prevent concurrent captures on the same tab
+  if (state.captureInFlight) throw new Error('Capture already in progress for this tab.');
+  state.captureInFlight = true;
+
   const normalizedRegion = normalizeRegion(region);
   if (normalizedRegion.width < 2 || normalizedRegion.height < 2) {
     throw new Error('Selected region is too small.');
   }
 
-  resetState(tabId);
-  updateState(tabId, { active: true, status: 'Capturing', progress: 'Starting capture loop.' });
+  // Set up abort controller so Stop can interrupt OCR
+  const controller = new AbortController();
+  captureControllers.set(tabId, controller);
 
-  const fragments = [];
-  let lastScrollY = -1;
-  const { ocrAutoscroll } = await chrome.storage.sync.get({ ocrAutoscroll: true });
+  try {
+    resetState(tabId);
+    updateState(tabId, { active: true, status: 'Capturing', progress: 'Starting capture loop.' });
 
-  while (true) {
-    if (state.stopRequested) {
-      await finalizePostCapture(tabId, mergeFragments(fragments), fragments);
-      return;
-    }
-    const pageNumber = fragments.length + 1;
-    updateState(tabId, {
-      currentPage: pageNumber,
-      fragmentsCollected: fragments.length,
-      progress: `Capturing page ${pageNumber}...`
-    });
+    const fragments = [];
+    let lastScrollY = -1;
+    const { ocrAutoscroll } = await chrome.storage.sync.get({ ocrAutoscroll: true });
 
-    const dataUrl = await chrome.tabs.captureVisibleTab(winId, { format: 'png' });
-    const croppedBlob = await cropVisibleCapture(dataUrl, normalizedRegion);
-
-    updateState(tabId, { progress: `Sending page ${pageNumber} to OCR...` });
-    try {
-      const text = await postImageForOcr(croppedBlob, pageNumber);
-      fragments.push(text);
-    } catch (e) {
-      // Save retry state so user can resume
-      state.retryState = { tab, region: normalizedRegion, winId, fragments, lastScrollY };
-      chrome.storage.local.set({ [`retryState:${tabId}`]: state.retryState }).catch(() => {});
+    while (true) {
+      if (state.stopRequested) break;
+      const pageNumber = fragments.length + 1;
       updateState(tabId, {
-        active: true,
-        status: 'Error',
-        error: e.message,
-        progress: `Failed on page ${pageNumber}. Click Retry to continue.`,
-        fragmentsCollected: fragments.length
+        currentPage: pageNumber,
+        fragmentsCollected: fragments.length,
+        progress: `Capturing page ${pageNumber}...`
       });
-      return;
+
+      const dataUrl = await chrome.tabs.captureVisibleTab(winId, { format: 'png' });
+      const croppedBlob = await cropVisibleCapture(dataUrl, normalizedRegion);
+
+      updateState(tabId, { progress: `Sending page ${pageNumber} to OCR...` });
+      try {
+        const text = await postImageForOcr(croppedBlob, pageNumber, controller.signal);
+        fragments.push(text);
+      } catch (e) {
+        if (state.stopRequested || e.name === 'AbortError') break;  // User stopped — finalize below
+        // Save retry state so user can resume
+        state.retryState = { tab, region: normalizedRegion, winId, fragments, lastScrollY };
+        chrome.storage.local.set({ [`retryState:${tabId}`]: state.retryState }).catch(() => {});
+        updateState(tabId, {
+          active: true,
+          status: 'Error',
+          error: e.message,
+          progress: `Failed on page ${pageNumber}. Click Retry to continue.`,
+          fragmentsCollected: fragments.length
+        });
+        return;
+      }
+
+      updateState(tabId, {
+        fragments,
+        fragmentsCollected: fragments.length,
+        progress: `Collected ${fragments.length} fragment${fragments.length === 1 ? '' : 's'}.`
+      });
+
+      await sleep(AFTER_SEND_DELAY_MS);
+
+      if (!ocrAutoscroll) break;
+
+      if (fragments.length >= MAX_CAPTURE_PAGES) {
+        updateState(tabId, { progress: `Reached page limit (${MAX_CAPTURE_PAGES}). Stopping.` });
+        break;
+      }
+
+      const scrollResult = await chrome.tabs.sendMessage(tab.id, {
+        type: 'page:scroll-down',
+        overlapPx: OVERLAP_PX
+      });
+
+      if (!scrollResult?.changed || scrollResult.scrollY === lastScrollY) break;
+      lastScrollY = scrollResult.scrollY;
     }
 
+    const mergedText = mergeFragments(fragments);
     updateState(tabId, {
-      fragments,
-      fragmentsCollected: fragments.length,
-      progress: `Collected ${fragments.length} fragment${fragments.length === 1 ? '' : 's'}.`
+      progress: 'Deduplicating merged text...',
+      fragments
     });
-
-    await sleep(AFTER_SEND_DELAY_MS);
-
-    if (!ocrAutoscroll) break;
-
-    if (fragments.length >= MAX_CAPTURE_PAGES) {
-      updateState(tabId, { progress: `Reached page limit (${MAX_CAPTURE_PAGES}). Stopping.` });
-      break;
-    }
-
-    const scrollResult = await chrome.tabs.sendMessage(tab.id, {
-      type: 'page:scroll-down',
-      overlapPx: OVERLAP_PX
-    });
-
-    if (!scrollResult?.changed || scrollResult.scrollY === lastScrollY) break;
-    lastScrollY = scrollResult.scrollY;
+    await finalizePostCapture(tabId, mergedText, fragments);
+  } finally {
+    state.captureInFlight = false;
+    captureControllers.delete(tabId);
   }
-
-  const mergedText = mergeFragments(fragments);
-  updateState(tabId, {
-    progress: 'Deduplicating merged text...',
-    fragments
-  });
-  await finalizePostCapture(tabId, mergedText, fragments);
 }
 
 async function resumeCaptureLoop(rs) {
@@ -468,73 +484,84 @@ async function resumeCaptureLoop(rs) {
   if (!tab?.id) throw new Error('Missing tab id.');
   const tabId = tab.id;
   const state = getState(tabId);
-  let scrollY = lastScrollY;
 
-  while (true) {
-    if (state.stopRequested) {
-      await finalizePostCapture(tabId, mergeFragments(fragments), fragments);
-      return;
-    }
-    // Check autoscroll setting
-    const { ocrAutoscroll } = await chrome.storage.sync.get({ ocrAutoscroll: true });
-    if (!ocrAutoscroll && fragments.length > 0) {
-      updateState(tabId, { progress: 'Single capture complete (autoscroll off).' });
-      break;
-    }
-    const pageNumber = fragments.length + 1;
-    updateState(tabId, {
-      currentPage: pageNumber,
-      fragmentsCollected: fragments.length,
-      progress: `Capturing page ${pageNumber}...`
-    });
+  // Prevent concurrent captures on the same tab
+  if (state.captureInFlight) throw new Error('Capture already in progress for this tab.');
+  state.captureInFlight = true;
 
-    const dataUrl = await chrome.tabs.captureVisibleTab(winId, { format: 'png' });
-    const croppedBlob = await cropVisibleCapture(dataUrl, region);
+  const controller = new AbortController();
+  captureControllers.set(tabId, controller);
 
-    updateState(tabId, { progress: `Sending page ${pageNumber} to OCR...` });
-    try {
-      const text = await postImageForOcr(croppedBlob, pageNumber);
-      fragments.push(text);
-    } catch (e) {
-      state.retryState = { tab, region, winId, fragments, lastScrollY: scrollY };
-      chrome.storage.local.set({ [`retryState:${tabId}`]: state.retryState }).catch(() => {});
+  try {
+    let scrollY = lastScrollY;
+
+    while (true) {
+      if (state.stopRequested) break;
+      // Check autoscroll setting
+      const { ocrAutoscroll } = await chrome.storage.sync.get({ ocrAutoscroll: true });
+      if (!ocrAutoscroll && fragments.length > 0) {
+        updateState(tabId, { progress: 'Single capture complete (autoscroll off).' });
+        break;
+      }
+      const pageNumber = fragments.length + 1;
       updateState(tabId, {
-        active: true,
-        status: 'Error',
-        error: e.message,
-        progress: `Failed on page ${pageNumber}. Click Retry to continue.`,
-        fragmentsCollected: fragments.length
+        currentPage: pageNumber,
+        fragmentsCollected: fragments.length,
+        progress: `Capturing page ${pageNumber}...`
       });
-      return;
+
+      const dataUrl = await chrome.tabs.captureVisibleTab(winId, { format: 'png' });
+      const croppedBlob = await cropVisibleCapture(dataUrl, region);
+
+      updateState(tabId, { progress: `Sending page ${pageNumber} to OCR...` });
+      try {
+        const text = await postImageForOcr(croppedBlob, pageNumber, controller.signal);
+        fragments.push(text);
+      } catch (e) {
+        if (state.stopRequested || e.name === 'AbortError') break;
+        state.retryState = { tab, region, winId, fragments, lastScrollY: scrollY };
+        chrome.storage.local.set({ [`retryState:${tabId}`]: state.retryState }).catch(() => {});
+        updateState(tabId, {
+          active: true,
+          status: 'Error',
+          error: e.message,
+          progress: `Failed on page ${pageNumber}. Click Retry to continue.`,
+          fragmentsCollected: fragments.length
+        });
+        return;
+      }
+
+      updateState(tabId, {
+        fragments,
+        fragmentsCollected: fragments.length,
+        progress: `Collected ${fragments.length} fragment${fragments.length === 1 ? '' : 's'}.`
+      });
+
+      await sleep(AFTER_SEND_DELAY_MS);
+
+      if (!ocrAutoscroll) break;
+
+      if (fragments.length >= MAX_CAPTURE_PAGES) {
+        updateState(tabId, { progress: `Reached page limit (${MAX_CAPTURE_PAGES}). Stopping.` });
+        break;
+      }
+
+      const scrollResult = await chrome.tabs.sendMessage(tab.id, {
+        type: 'page:scroll-down',
+        overlapPx: OVERLAP_PX
+      });
+
+      if (!scrollResult?.changed || scrollResult.scrollY === scrollY) break;
+      scrollY = scrollResult.scrollY;
     }
 
-    updateState(tabId, {
-      fragments,
-      fragmentsCollected: fragments.length,
-      progress: `Collected ${fragments.length} fragment${fragments.length === 1 ? '' : 's'}.`
-    });
-
-    await sleep(AFTER_SEND_DELAY_MS);
-
-    if (!ocrAutoscroll) break;
-
-    if (fragments.length >= MAX_CAPTURE_PAGES) {
-      updateState(tabId, { progress: `Reached page limit (${MAX_CAPTURE_PAGES}). Stopping.` });
-      break;
-    }
-
-    const scrollResult = await chrome.tabs.sendMessage(tab.id, {
-      type: 'page:scroll-down',
-      overlapPx: OVERLAP_PX
-    });
-
-    if (!scrollResult?.changed || scrollResult.scrollY === scrollY) break;
-    scrollY = scrollResult.scrollY;
+    const mergedText = mergeFragments(fragments);
+    updateState(tabId, { progress: 'Deduplicating merged text...', fragments });
+    await finalizePostCapture(tabId, mergedText, fragments);
+  } finally {
+    state.captureInFlight = false;
+    captureControllers.delete(tabId);
   }
-
-  const mergedText = mergeFragments(fragments);
-  updateState(tabId, { progress: 'Deduplicating merged text...', fragments });
-  await finalizePostCapture(tabId, mergedText, fragments);
 }
 
 async function finalizePostCapture(tabId, mergedText, fragments) {
@@ -685,12 +712,12 @@ async function cropVisibleCapture(dataUrl, region) {
 
 // ── OCR call ───────────────────────────────────────────────────
 
-async function postImageForOcr(blob, pageNumber) {
+async function postImageForOcr(blob, pageNumber, signal) {
   const formData = new FormData();
   formData.append('image', blob, `page-${String(pageNumber).padStart(4, '0')}.png`);
 
   const url = await getBackendEndpoint('/ocr');
-  const response = await fetchWithTimeout(url, { method: 'POST', body: formData });
+  const response = await fetchWithTimeout(url, { method: 'POST', body: formData }, signal);
 
   if (!response.ok) {
     throw new Error(`OCR HTTP ${response.status}: ${await response.text().catch(() => '')}`);
@@ -804,9 +831,20 @@ async function dataUrlToBlob(dataUrl) {
   return fetch(dataUrl).then((r) => r.blob());
 }
 
-async function fetchWithTimeout(url, options = {}) {
+async function fetchWithTimeout(url, options = {}, externalSignal) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), BACKEND_TIMEOUT_MS);
+
+  // Wire external signal (e.g. user Stop) to the internal controller
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+      clearTimeout(timeoutId);
+    } else {
+      externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+  }
+
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } finally {
