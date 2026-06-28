@@ -408,6 +408,9 @@ async function runCaptureLoop(tab, region) {
     resetState(tabId);
     updateState(tabId, { active: true, status: 'Capturing', progress: 'Starting capture loop.' });
 
+    // Lock page scroll — user scrolling during autoscroll desyncs overlap tracking
+    chrome.tabs.sendMessage(tab.id, { type: 'page:lock-scroll' }).catch(() => {});
+
     const fragments = [];
     let lastScrollY = -1;
     const { ocrAutoscroll } = await chrome.storage.sync.get({ ocrAutoscroll: true });
@@ -492,6 +495,8 @@ async function runCaptureLoop(tab, region) {
   } finally {
     state.captureInFlight = false;
     captureControllers.delete(tabId);
+    // Unlock page scroll
+    chrome.tabs.sendMessage(tab.id, { type: 'page:unlock-scroll' }).catch(() => {});
   }
 }
 
@@ -509,6 +514,9 @@ async function resumeCaptureLoop(rs) {
   captureControllers.set(tabId, controller);
 
   try {
+    // Lock page scroll — user scrolling during autoscroll desyncs overlap tracking
+    chrome.tabs.sendMessage(tab.id, { type: 'page:lock-scroll' }).catch(() => {});
+
     let scrollY = lastScrollY;
 
     while (true) {
@@ -592,6 +600,8 @@ async function resumeCaptureLoop(rs) {
   } finally {
     state.captureInFlight = false;
     captureControllers.delete(tabId);
+    // Unlock page scroll
+    chrome.tabs.sendMessage(tab.id, { type: 'page:unlock-scroll' }).catch(() => {});
   }
 }
 

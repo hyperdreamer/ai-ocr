@@ -12,6 +12,8 @@
   const MIN_SIZE = 10;
   const HANDLE_SIZE = 8;
 
+  let _scrollLocked = false;
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === 'selection:start') {
       startSelectionMode(message.lastRegion || null);
@@ -24,12 +26,49 @@
         .catch((error) => sendResponse({ changed: false, error: error.message }));
       return true;
     }
+    if (message?.type === 'page:lock-scroll') {
+      lockScroll();
+      sendResponse({ ok: true });
+      return false;
+    }
+    if (message?.type === 'page:unlock-scroll') {
+      unlockScroll();
+      sendResponse({ ok: true });
+      return false;
+    }
     if (message?.type === 'get-viewport') {
       sendResponse({ width: window.innerWidth, height: window.innerHeight, dpr: window.devicePixelRatio || 1 });
       return false;
     }
     return false;
   });
+
+  function lockScroll() {
+    if (_scrollLocked) return;
+    _scrollLocked = true;
+    window.addEventListener('wheel', _preventScroll, { passive: false });
+    window.addEventListener('touchmove', _preventScroll, { passive: false });
+    window.addEventListener('keydown', _preventScrollKeys, true);
+  }
+
+  function unlockScroll() {
+    if (!_scrollLocked) return;
+    _scrollLocked = false;
+    window.removeEventListener('wheel', _preventScroll);
+    window.removeEventListener('touchmove', _preventScroll);
+    window.removeEventListener('keydown', _preventScrollKeys, true);
+  }
+
+  function _preventScroll(e) {
+    e.preventDefault();
+  }
+
+  const SCROLL_KEYS = new Set([' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End']);
+  function _preventScrollKeys(e) {
+    if (SCROLL_KEYS.has(e.key)) {
+      e.preventDefault();
+    }
+  }
 
   function startSelectionMode(saved) {
     removeOverlay();
