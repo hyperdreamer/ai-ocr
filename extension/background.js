@@ -80,7 +80,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     `tl2Result:${tabId}`,
     `tl2Language:${tabId}`,
     `tl2Status:${tabId}`,
-    `tl2Translating:${tabId}`
+    `tl2Translating:${tabId}`,
+    `retryState:${tabId}`
   ]).catch(() => {});
 });
 // ── keyboard shortcut ──────────────────────────────────────────
@@ -434,7 +435,7 @@ async function runCaptureLoop(tab, region) {
           ocrErr = null;
           break;
         } catch (e) {
-          if (state.stopRequested || e.name === 'AbortError') { ocrErr = null; break; }
+          if (state.stopRequested) { ocrErr = null; break; }  // user Stop only — not timeout
           ocrErr = e;
           updateState(tabId, { progress: `Retrying page ${pageNumber} (attempt ${attempt + 1})...` });
           await sleep(2000);
@@ -539,12 +540,10 @@ async function resumeCaptureLoop(rs) {
           ocrErr = null;
           break;
         } catch (e) {
-          if (state.stopRequested || e.name === 'AbortError') { ocrErr = null; break; }
+          if (state.stopRequested) { ocrErr = null; break; }  // user Stop only — not timeout
           ocrErr = e;
-          if (attempt < 3) {
-            updateState(tabId, { progress: `Retrying page ${pageNumber} (${attempt + 1}/3)...` });
-            await sleep(2000);
-          }
+          updateState(tabId, { progress: `Retrying page ${pageNumber} (attempt ${attempt + 1})...` });
+          await sleep(2000);
         }
       }
       if (ocrErr) {
@@ -601,14 +600,32 @@ async function resumeCaptureLoop(rs) {
 async function finalizePostCapture(tabId, mergedText, fragments) {
   const state = getState(tabId);
   let finalText;
-  for (let attempt = 1; ; attempt++) {
+  for (let attempt = 1; attempt <= 10; attempt++) {
     try {
       finalText = await postTextForDedup(mergedText);
       break;
     } catch (e) {
       if (state.stopRequested) { finalText = null; break; }
-      updateState(tabId, { progress: `Retrying dedup (attempt ${attempt + 1})...` });
-      await sleep(2000);
+      if (attempt < 10) {
+        updateState(tabId, { progress: `Retrying dedup (${attempt + 1}/10)...` });
+        await sleep(2000);
+        continue;
+      }
+      // Exhausted retries — fall back to error state
+      console.error('Dedup failed after 10 retries:', e);
+      state.retryStage = 'dedup';
+      state.pendingText = mergedText;
+      chrome.storage.local.set({ [`lastResult:${tabId}`]: mergedText });
+      updateState(tabId, {
+        active: true,
+        status: 'Error',
+        error: 'Dedup failed. Click Retry.',
+        progress: 'Dedup failed. Click Retry.',
+        fragments,
+        mergedText,
+        fragmentsCollected: fragments.length
+      });
+      return;
     }
   }
 
@@ -911,7 +928,8 @@ function resetState(tabId) {
   // Clear stale stored result/status so popup init() doesn't reload old capture
   chrome.storage.local.remove([
     `lastResult:${tabId}`,
-    `lastStatus:${tabId}`
+    `lastStatus:${tabId}`,
+    `retryState:${tabId}`
   ]).catch(() => {});
 }
 
