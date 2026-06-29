@@ -3,16 +3,16 @@
   inset: 0;
   z-index: 2147483647;
   cursor: crosshair;
-  background: rgba(144, 238, 144, 0.40);
+  background: rgba(144, 238, 144, 0.15);
   user-select: none;
 }
 
 .qidian-ocr-selection {
   position: fixed;
   box-sizing: border-box;
-  border: 2px solid #25a5ff;
-  background: rgba(37, 165, 255, 0.16);
-  box-shadow: 0 0 0 9999px rgba(144, 238, 144, 0.36);
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  background: transparent;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.60);
   pointer-events: none;
 }
 
