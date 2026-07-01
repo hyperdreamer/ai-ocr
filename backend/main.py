@@ -594,21 +594,17 @@ async def dedup(request: DedupRequest) -> Response:
 
     _validate_text_size(request.text, config)
     _debug("dedup", f"request: {len(request.text)} chars", enabled=config.debug)
-    # Debug: save pre-dedup text (timestamped) for retry troubleshooting
+    # Debug: save pre-dedup text for retry troubleshooting
     try:
-        import datetime
-        dump_dir = Path("/tmp/ai-ocr-debug")
-        dump_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        (dump_dir / f"pre-dedup-{ts}.txt").write_text(request.text, encoding="utf-8")
+        Path("/tmp/pre_dedup.txt").write_text(request.text, encoding="utf-8")
     except OSError:
         pass
     _debug("dedup", "calling provider...", enabled=config.debug)
     result = await deduplicate_text(config.ai, request.text)
     _debug("dedup", f"AI returned {len(result.text)} chars model={result.model}", enabled=config.debug)
-    # Debug: save post-dedup text for quick access
+    # Debug: save post-dedup text for quick comparison
     try:
-        Path("/tmp/dedup_last.txt").write_text(result.text, encoding="utf-8")
+        Path("/tmp/after_dedup.txt").write_text(result.text, encoding="utf-8")
     except OSError:
         pass
     body = {"text": result.text, "model": result.model, "tokens_used": result.tokens_used}
