@@ -81,7 +81,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     `tl2Language:${tabId}`,
     `tl2Status:${tabId}`,
     `tl2Translating:${tabId}`,
-    `retryState:${tabId}`
+    `retryState:${tabId}`,
+    `preDedup:${tabId}`,
+    `postDedup:${tabId}`
   ]).catch(() => {});
 });
 // ── keyboard shortcut ──────────────────────────────────────────
@@ -627,11 +629,15 @@ async function resumeCaptureLoop(rs) {
 
 async function finalizePostCapture(tabId, mergedText, fragments) {
   const state = getState(tabId);
+  // Save pre-dedup text for debugging
+  chrome.storage.local.set({ [`preDedup:${tabId}`]: mergedText }).catch(() => {});
   const signal = captureControllers.get(tabId)?.signal;
   let finalText;
   for (let attempt = 1; attempt <= 10; attempt++) {
     try {
       finalText = await postTextForDedup(mergedText, signal);
+      // Save post-dedup text for debugging
+      chrome.storage.local.set({ [`postDedup:${tabId}`]: finalText }).catch(() => {});
       break;
     } catch (e) {
       if (state.stopRequested) { finalText = null; break; }
@@ -960,7 +966,9 @@ function resetState(tabId) {
     `lastStatus:${tabId}`,
     `retryState:${tabId}`,
     `tl2Result:${tabId}`,
-    `tl2Status:${tabId}`
+    `tl2Status:${tabId}`,
+    `preDedup:${tabId}`,
+    `postDedup:${tabId}`
   ]).catch(() => {});
 }
 
